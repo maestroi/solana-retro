@@ -210,7 +210,7 @@
             </div>
 
             <!-- Legal Disclaimer -->
-            <div class="bg-slate-800/30 border border-slate-700/30 rounded-lg p-3 mb-6">
+            <div class="bg-slate-800/30 border border-slate-700/30 rounded-lg p-3 mb-4">
               <div class="flex items-start gap-2">
                 <svg class="w-4 h-4 text-gray-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3" />
@@ -226,6 +226,20 @@
                   </p>
                 </div>
               </div>
+            </div>
+
+            <!-- Disclaimer Acceptance Checkbox -->
+            <div class="mb-6">
+              <label class="flex items-start gap-3 cursor-pointer group">
+                <input
+                  type="checkbox"
+                  v-model="disclaimerAccepted"
+                  class="mt-0.5 w-4 h-4 rounded border-slate-600 bg-slate-800 text-purple-500 focus:ring-purple-500 focus:ring-2 focus:ring-offset-0 focus:ring-offset-slate-900 cursor-pointer"
+                />
+                <span class="text-sm text-gray-400 group-hover:text-gray-300 transition-colors">
+                  I understand and accept the legal disclaimer above
+                </span>
+              </label>
             </div>
 
             <!-- Links -->
@@ -244,7 +258,13 @@
             <div class="flex flex-col sm:flex-row gap-3">
               <button
                 @click="startPlaying"
-                class="flex-1 inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-purple-500 to-cyan-500 text-white font-semibold shadow-lg shadow-purple-500/25 hover:from-purple-400 hover:to-cyan-400 transition-all duration-200 hover:shadow-purple-500/40 hover:scale-[1.02] active:scale-[0.98]"
+                :disabled="!disclaimerAccepted"
+                :class="[
+                  'flex-1 inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-semibold transition-all duration-200',
+                  disclaimerAccepted
+                    ? 'bg-gradient-to-r from-purple-500 to-cyan-500 text-white shadow-lg shadow-purple-500/25 hover:from-purple-400 hover:to-cyan-400 hover:shadow-purple-500/40 hover:scale-[1.02] active:scale-[0.98] cursor-pointer'
+                    : 'bg-slate-700/50 text-gray-500 cursor-not-allowed opacity-60'
+                ]"
               >
                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
@@ -268,17 +288,27 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 
-const STORAGE_KEY = 'solana-retro-welcome-dismissed'
+const STORAGE_KEY_DISMISSED = 'solana-retro-welcome-dismissed'
+const STORAGE_KEY_ACCEPTED = 'solana-retro-disclaimer-accepted'
 
 const isOpen = ref(false)
 const showAdvanced = ref(false)
+const disclaimerAccepted = ref(false)
 
 const emit = defineEmits(['close'])
 
 onMounted(() => {
-  // Check if user has dismissed the modal before
-  const dismissed = localStorage.getItem(STORAGE_KEY)
-  if (!dismissed) {
+  // Check if user has dismissed the modal or accepted disclaimer before
+  const dismissed = localStorage.getItem(STORAGE_KEY_DISMISSED)
+  const accepted = localStorage.getItem(STORAGE_KEY_ACCEPTED)
+  
+  // Restore acceptance state if previously accepted
+  if (accepted === 'true') {
+    disclaimerAccepted.value = true
+  }
+  
+  // Only show modal if not dismissed and not accepted
+  if (!dismissed && !accepted) {
     // Small delay for better UX
     setTimeout(() => {
       isOpen.value = true
@@ -287,12 +317,16 @@ onMounted(() => {
 })
 
 function startPlaying() {
+  // Save disclaimer acceptance
+  if (disclaimerAccepted.value) {
+    localStorage.setItem(STORAGE_KEY_ACCEPTED, 'true')
+  }
   isOpen.value = false
   emit('close')
 }
 
 function dismiss() {
-  localStorage.setItem(STORAGE_KEY, 'true')
+  localStorage.setItem(STORAGE_KEY_DISMISSED, 'true')
   isOpen.value = false
   emit('close')
 }

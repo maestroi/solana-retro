@@ -229,6 +229,7 @@ program
   .description('Publish a cartridge ZIP file to the blockchain')
   .option('-c, --chunk-size <bytes>', 'Chunk size in bytes', String(DEFAULT_CHUNK_SIZE))
   .option('-m, --metadata <json>', 'Optional metadata JSON string')
+  .option('--concurrency <number>', 'Number of parallel uploads (default: 3, recommended: 5-10 for faster uploads)', '3')
   .option('--dry-run', 'Calculate costs without publishing')
   .action(async (zipFile: string, cmdOptions) => {
     const globalOptions = program.opts();
@@ -349,8 +350,10 @@ program
       const startTime = Date.now();
       
       // Publish the cartridge
+      const concurrentUploads = parseInt(cmdOptions.concurrency) || 3;
       const result = await client.publishCartridge(keypair, zipBytes, {
         chunkSize,
+        concurrentUploads,
         metadata: cmdOptions.metadata ? JSON.parse(cmdOptions.metadata) : {},
         onProgress: (progress: PublishProgress) => {
           switch (progress.phase) {

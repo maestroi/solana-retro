@@ -1,73 +1,17 @@
-version: "3.8"
-
-# Solana RPC Proxy - Docker Swarm Configuration
-# Image: ghcr.io/maestroi/solana-retro-rpc-proxy:latest
-# Endpoint: https://rpc-solana-retro.maestroi.cc (via Cloudflare Tunnel -> Traefik)
-
 services:
   rpc-proxy:
-    image: ghcr.io/maestroi/solana-retro-rpc-proxy:${TAG:-latest}
+    # image: ghcr.io/maestroi/solana-retro-rpc-proxy:${TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - target: 8899
         published: 8899
         protocol: tcp
         mode: host  # Use host mode for Traefik to see real client IPs
-    environment:
-      # Your paid RPC endpoint
-      RPC_UPSTREAM_URL: ${RPC_UPSTREAM_URL:-https://api.testnet.solana.com}
-      # Rate limit mode: per_ip recommended for multi-user
-      RPC_RATE_MODE: ${RPC_RATE_MODE:-per_ip}
-      # Listen address
-      RPC_LISTEN_ADDR: ":8899"
-    deploy:
-      mode: replicated
-      replicas: ${REPLICAS:-2}
-      placement:
-        constraints:
-          - node.role == worker
-      update_config:
-        parallelism: 1
-        delay: 10s
-        failure_action: rollback
-        order: start-first
-      restart_policy:
-        condition: on-failure
-        delay: 5s
-        max_attempts: 3
-        window: 120s
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 256M
-        reservations:
-          cpus: '0.1'
-          memory: 32M
-      labels:
-        # Traefik labels - adjust to your setup
-        - "traefik.enable=true"
-        - "traefik.http.routers.rpc-solana.rule=Host(`rpc-solana-retro.maestroi.cc`)"
-        - "traefik.http.routers.rpc-solana.entrypoints=websecure"
-        - "traefik.http.routers.rpc-solana.tls=true"
-        - "traefik.http.services.rpc-solana.loadbalancer.server.port=8899"
-        - "traefik.http.services.rpc-solana.loadbalancer.healthcheck.path=/health"
-        - "traefik.http.services.rpc-solana.loadbalancer.healthcheck.interval=10s"
-        # Sticky sessions for per-IP rate limiting consistency
-        - "traefik.http.services.rpc-solana.loadbalancer.sticky.cookie=true"
-        - "traefik.http.services.rpc-solana.loadbalancer.sticky.cookie.name=rpc_session"
-    healthcheck:
-      test: ["/app/rpc-proxy", "-health-check"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    networks:
-      - proxy  # Your Traefik network
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-networks:
-  proxy:
-    external: true  # Use existing Traefik network
+    volumes:
+      # Mount local config.json into container
+      - ./config.json:/app/config.json:ro
+    command:
+      # Use config file for all settings
+      - "-config=/app/config.json"

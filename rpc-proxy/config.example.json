@@ -17,5 +17,9 @@
   "allowed_origins": ["*"],
   "log_requests": true,
   "enable_metrics": true,
-  "ip_limiter_ttl": "10m"
+  "ip_limiter_ttl": "10m",
+  "allowed_methods": [
+    "getAccountInfo",
+    "getMultipleAccounts"
+  ]
 }
