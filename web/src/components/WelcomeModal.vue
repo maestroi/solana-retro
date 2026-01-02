@@ -209,6 +209,25 @@
               </Transition>
             </div>
 
+            <!-- Legal Disclaimer -->
+            <div class="bg-slate-800/30 border border-slate-700/30 rounded-lg p-3 mb-6">
+              <div class="flex items-start gap-2">
+                <svg class="w-4 h-4 text-gray-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3" />
+                </svg>
+                <div class="text-[10px] text-gray-500 leading-relaxed">
+                  <p class="font-medium text-gray-400 mb-1">Legal Disclaimer</p>
+                  <p>
+                    This project is for <span class="text-gray-400">educational and research purposes only</span>. 
+                    Users are responsible for ensuring they have the legal right to use any game files. 
+                    Only use games you legally own or that are in the public domain. 
+                    The developers do not condone piracy and are not responsible for any misuse of this software.
+                    This software is provided "as is" without warranty of any kind.
+                  </p>
+                </div>
+              </div>
+            </div>
+
             <!-- Links -->
             <div class="flex items-center gap-4 text-xs text-gray-500 mb-6">
               <a href="https://github.com/maestroi/solana-retro" target="_blank" class="flex items-center gap-1.5 hover:text-gray-300 transition-colors">

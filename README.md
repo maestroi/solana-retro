@@ -225,9 +225,21 @@ This project was migrated from Nimiq to Solana. Key differences:
 
 The cartridge format (ZIP with `run.json`) is **unchanged** - existing game packages work without modification.
 
+## ⚠️ Legal Disclaimer
+
+**This project is for educational and research purposes only.**
+
+- Users are responsible for ensuring they have the legal right to use any game files
+- Only use games you legally own or that are in the public domain
+- The developers do not condone piracy and are not responsible for any misuse of this software
+- Game assets are **not included** - users must provide their own legally obtained copies
+- This software is provided "as is" without warranty of any kind, express or implied
+
+By using this software, you agree to comply with all applicable laws and regulations regarding intellectual property and copyright.
+
 ## License
 
-This project is provided as-is for educational purposes. Game assets are not included - users must provide their own copies.
+MIT License - See [LICENSE](LICENSE) for details.
 
 ---
 
