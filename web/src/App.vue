@@ -135,11 +135,13 @@
             :catalog-loading="catalogLoading"
             :error="error"
             :progress-percent="cartridgeProgressPercent"
+            :auto-run-enabled="autoRunEnabled"
             @update:platform="onPlatformChange"
             @update:game="onGameChange"
             @update:version="onVersionChange"
             @load-cartridge="loadCartridge"
             @clear-cache="clearCartridgeCache"
+            @update:auto-run="autoRunEnabled = $event"
           />
 
           <!-- Emulator Container -->
@@ -296,10 +298,29 @@ const {
 
 const runJson = ref(null)
 
-// Watch for cartridge loading completion to extract run.json
+// Auto-run setting (stored in localStorage)
+const autoRunEnabled = ref(localStorage.getItem('solana-retro-autorun') !== 'false') // Default to true
+
+// Watch autoRunEnabled to save to localStorage
+watch(autoRunEnabled, (newValue) => {
+  localStorage.setItem('solana-retro-autorun', String(newValue))
+})
+
+// Watch for cartridge loading completion to extract run.json and auto-run
 watch([fileData, verified], async ([newFileData, newVerified]) => {
   if (newFileData && newVerified) {
     runJson.value = await extractRunJson()
+    
+    // Auto-run the game if enabled and not already running
+    if (autoRunEnabled.value && !gameReady.value && !emulatorLoading.value) {
+      // Small delay to ensure UI is ready
+      await new Promise(resolve => setTimeout(resolve, 100))
+      try {
+        await runGame()
+      } catch (err) {
+        console.error('Auto-run failed:', err)
+      }
+    }
   } else {
     runJson.value = null
   }

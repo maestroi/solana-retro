@@ -164,6 +164,26 @@
                 </span>
               </dd>
             </div>
+            <!-- Locked Rent Cost -->
+            <div v-if="cartHeader && rentCost">
+              <dt class="text-xs font-medium text-gray-400 flex items-center gap-1">
+                Locked Rent
+                <span class="text-gray-500 cursor-help" title="SOL locked for rent-exempt storage on Solana. This is the cost to keep this cartridge permanently on-chain.">
+                  <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </span>
+              </dt>
+              <dd class="mt-0.5 text-xs">
+                <div class="flex items-center gap-2">
+                  <span class="text-purple-400 font-medium">◎ {{ rentCost.sol.toFixed(4) }} SOL</span>
+                  <span v-if="solPrice" class="text-gray-400">(~${{ rentCost.usd.toFixed(2) }})</span>
+                </div>
+                <div class="text-[10px] text-gray-500 mt-0.5">
+                  {{ cartHeader.chunkCount || Math.ceil(cartHeader.totalSize / 900) }} chunks × ~0.006 SOL each
+                </div>
+              </dd>
+            </div>
           </dl>
         </div>
 
@@ -240,6 +260,18 @@
     
     <!-- Download Button -->
     <div class="px-4 py-4 sm:px-6 border-t border-gray-700 dark:border-white/10">
+      <!-- Auto-run toggle -->
+      <div class="flex items-center justify-between mb-3">
+        <label class="flex items-center gap-2 cursor-pointer group">
+          <input
+            type="checkbox"
+            :checked="autoRunEnabled"
+            @change="$emit('update:auto-run', $event.target.checked)"
+            class="w-4 h-4 rounded border-gray-600 bg-gray-700 text-green-500 focus:ring-green-500 focus:ring-offset-gray-800 cursor-pointer"
+          />
+          <span class="text-xs text-gray-400 group-hover:text-gray-300 transition-colors">Auto-run after download</span>
+        </label>
+      </div>
       <div class="flex gap-2">
         <button
           @click="$emit('load-cartridge')"
@@ -285,7 +317,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { formatBytes, formatHash } from '../utils.js'
 
 const props = defineProps({
@@ -301,10 +333,64 @@ const props = defineProps({
   loading: Boolean,
   catalogLoading: Boolean,
   error: String,
-  progressPercent: Number
+  progressPercent: Number,
+  autoRunEnabled: {
+    type: Boolean,
+    default: true
+  }
 })
 
-const emit = defineEmits(['update:platform', 'update:game', 'update:version', 'load-cartridge', 'clear-cache'])
+// SOL price in USD (fetched on mount)
+const solPrice = ref(null)
+
+// Fetch SOL price from CoinGecko
+async function fetchSolPrice() {
+  try {
+    const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd')
+    const data = await response.json()
+    solPrice.value = data.solana?.usd || null
+  } catch (e) {
+    console.warn('Failed to fetch SOL price:', e)
+    solPrice.value = null
+  }
+}
+
+onMounted(() => {
+  fetchSolPrice()
+})
+
+// Calculate rent cost for the cartridge
+// Solana rent-exempt minimum: ~0.00000348 SOL per byte (for 2 years)
+// Account overhead: 128 bytes
+// Chunk size: ~900 bytes data + 128 bytes overhead = ~1028 bytes per chunk
+// Manifest: ~200 bytes data + 128 bytes overhead = ~328 bytes
+const RENT_PER_BYTE = 0.00000696 // SOL per byte (rent-exempt)
+const ACCOUNT_OVERHEAD = 128 // bytes
+const CHUNK_DATA_SIZE = 900 // bytes per chunk
+const MANIFEST_DATA_SIZE = 200 // approximate manifest size
+
+const rentCost = computed(() => {
+  if (!props.cartHeader) return null
+  
+  const chunkCount = props.cartHeader.chunkCount || Math.ceil(props.cartHeader.totalSize / CHUNK_DATA_SIZE)
+  
+  // Calculate total bytes stored on-chain
+  const manifestBytes = ACCOUNT_OVERHEAD + MANIFEST_DATA_SIZE
+  const chunkBytes = chunkCount * (ACCOUNT_OVERHEAD + CHUNK_DATA_SIZE)
+  const totalBytes = manifestBytes + chunkBytes
+  
+  const solCost = totalBytes * RENT_PER_BYTE
+  const usdCost = solPrice.value ? solCost * solPrice.value : 0
+  
+  return {
+    sol: solCost,
+    usd: usdCost,
+    totalBytes,
+    chunkCount
+  }
+})
+
+const emit = defineEmits(['update:platform', 'update:game', 'update:version', 'load-cartridge', 'clear-cache', 'update:auto-run'])
 
 // Search query state
 const searchQuery = ref('')
