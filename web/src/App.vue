@@ -178,29 +178,19 @@ import { useNesEmulator } from './composables/useNesEmulator.js'
 // Solana RPC Configuration
 // Support multiple RPC endpoints - primary for catalog, fallback for larger game downloads
 
-// Detect dev mode (localhost or dev server)
-const isDevMode = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-
 // RPC Proxy endpoints
-const RPC_PROXY_PROD = 'https://rpc-solana-retro.maestroi.cc'
-const RPC_PROXY_DEV = 'http://localhost:8899'
-
-// Select proxy based on environment
-const proxyEndpoint = isDevMode ? RPC_PROXY_DEV : RPC_PROXY_PROD
-
-const defaultRpcEndpoints = [
-  proxyEndpoint,
-  'https://api.testnet.solana.com'
-]
+const RPC_PROXY_PROD = 'https://rpc-solana-retro.maestroi.cc' // Update this to your deployed domain
+const RPC_PROXY_LOCAL = 'http://localhost:8899'
 
 const rpcEndpoints = ref([
-  { name: 'Solana Retro Proxy (Recommended)', url: proxyEndpoint },
+  { name: 'Solana Retro Proxy (Recommended)', url: RPC_PROXY_PROD },
+  { name: 'Solana Local Proxy', url: RPC_PROXY_LOCAL },
   { name: 'Solana Testnet (Rate Limited)', url: 'https://api.testnet.solana.com' },
   { name: 'Custom...', url: 'custom' }
 ])
 
-// Default to proxy endpoint for better download performance
-const selectedRpcEndpoint = ref(proxyEndpoint)
+// Default to production proxy endpoint for better download performance
+const selectedRpcEndpoint = ref(RPC_PROXY_PROD)
 const customRpcEndpoint = ref('')
 const rpcClient = ref(new SolanaRPC(selectedRpcEndpoint.value))
 
@@ -225,22 +215,19 @@ const visibleCatalogs = computed(() => {
 })
 
 // Catalog address is actually the RPC URL for Solana
-// Priority: Custom RPC endpoint > Custom Network address > Network preset
+// Priority: Selected RPC endpoint > Custom RPC endpoint > Custom Network address > Network preset
 const catalogAddress = computed(() => {
   // If RPC dropdown is set to "custom" and a custom URL is provided, use it
   if (selectedRpcEndpoint.value === 'custom' && customRpcEndpoint.value) {
     return customRpcEndpoint.value
   }
   
-  // If RPC dropdown has a direct URL (not a preset name), use it
+  // If RPC dropdown has a direct URL (starts with http), use it directly
+  // This includes both preset URLs (like proxy) and any custom URLs
   if (selectedRpcEndpoint.value && 
       selectedRpcEndpoint.value !== 'custom' && 
       selectedRpcEndpoint.value.startsWith('http')) {
-    // Check if it's one of the preset URLs - if so, use the network dropdown
-    const isPreset = rpcEndpoints.value.some(e => e.url === selectedRpcEndpoint.value && e.url !== 'custom')
-    if (!isPreset) {
-      return selectedRpcEndpoint.value
-    }
+    return selectedRpcEndpoint.value
   }
   
   // Network dropdown custom
@@ -248,7 +235,7 @@ const catalogAddress = computed(() => {
     return customCatalogAddress.value || null
   }
   
-  // Network preset
+  // Network preset (fallback)
   const catalog = catalogs.value.find(c => c.name === selectedCatalogName.value)
   if (!catalog) return 'https://api.testnet.solana.com'
   
@@ -335,7 +322,14 @@ const loading = computed(() => catalogLoading.value || cartridgeLoading.value ||
 const error = computed(() => catalogError.value || cartridgeError.value || emulatorError.value)
 
 // Handle platform selection
-function onPlatformChange(platform) {
+async function onPlatformChange(platform) {
+  // Stop current game if running
+  if (gameReady.value) {
+    await stopGame()
+    // Wait a bit for cleanup
+    await new Promise(resolve => setTimeout(resolve, 200))
+  }
+  
   selectedPlatform.value = platform
   // Reset game selection when platform changes
   selectedGame.value = null
@@ -343,6 +337,7 @@ function onPlatformChange(platform) {
   fileData.value = null
   verified.value = false
   runJson.value = null
+  gameReady.value = false
   
   // Auto-select first game if platform is selected
   if (platform && catalogGames.value && catalogGames.value.length > 0) {
@@ -354,7 +349,17 @@ function onPlatformChange(platform) {
 }
 
 // Handle game selection
-function onGameChange(game) {
+async function onGameChange(game) {
+  // Stop current game if running
+  if (gameReady.value) {
+    await stopGame()
+    // Wait a bit for cleanup
+    await new Promise(resolve => setTimeout(resolve, 200))
+  }
+  
+  // Reset manual stop flag when selecting a new game
+  wasManuallyStopped.value = false
+  
   selectedGame.value = game
   if (game && game.versions.length > 0) {
     selectedVersion.value = game.versions[0] // Select latest version
@@ -365,10 +370,18 @@ function onGameChange(game) {
   fileData.value = null
   verified.value = false
   runJson.value = null
+  gameReady.value = false
 }
 
 // Handle catalog selection (network change for Solana)
-function onCatalogChange(catalogName) {
+async function onCatalogChange(catalogName) {
+  // Stop current game if running
+  if (gameReady.value) {
+    await stopGame()
+    // Wait a bit for cleanup
+    await new Promise(resolve => setTimeout(resolve, 200))
+  }
+  
   selectedCatalogName.value = catalogName
   // Update RPC endpoint to match
   const catalog = catalogs.value.find(c => c.name === catalogName)
@@ -388,6 +401,7 @@ function onCatalogChange(catalogName) {
   fileData.value = null
   verified.value = false
   runJson.value = null
+  gameReady.value = false
   
   // Reload catalog with new network
   if (catalogName !== 'Custom...' || customCatalogAddress.value) {
@@ -396,7 +410,14 @@ function onCatalogChange(catalogName) {
 }
 
 // Handle custom catalog address change (custom RPC URL for Solana)
-function onCustomCatalogChange(address) {
+async function onCustomCatalogChange(address) {
+  // Stop current game if running
+  if (gameReady.value) {
+    await stopGame()
+    // Wait a bit for cleanup
+    await new Promise(resolve => setTimeout(resolve, 200))
+  }
+  
   customCatalogAddress.value = address
   if (address) {
     selectedRpcEndpoint.value = address
@@ -408,18 +429,30 @@ function onCustomCatalogChange(address) {
   fileData.value = null
   verified.value = false
   runJson.value = null
+  gameReady.value = false
   if (address) {
     loadCatalog()
   }
 }
 
 // Handle version selection
-function onVersionChange(version) {
+async function onVersionChange(version) {
+  // Stop current game if running
+  if (gameReady.value) {
+    await stopGame()
+    // Wait a bit for cleanup
+    await new Promise(resolve => setTimeout(resolve, 200))
+  }
+  
+  // Reset manual stop flag when selecting a new version
+  wasManuallyStopped.value = false
+  
   selectedVersion.value = version
   // Reset cartridge state
   fileData.value = null
   verified.value = false
   runJson.value = null
+  gameReady.value = false
 }
 
 // Watch for catalog address changes to reload catalog
@@ -470,6 +503,7 @@ watch(selectedVersion, async (newVersion) => {
 const gameReady = ref(false)
 const emulatorContainerRef = ref(null)
 const welcomeModalRef = ref(null)
+const wasManuallyStopped = ref(false) // Track if game was manually stopped
 
 // Show the welcome modal (called from help button)
 function showWelcomeModal() {
@@ -530,6 +564,9 @@ const nesEmulator = useNesEmulator(manifestForEmulator, fileData, verified, emul
 
 // Wrapper functions that get the container element and call the composable
 async function runGame() {
+  // Reset manual stop flag when starting a game (manual or auto)
+  wasManuallyStopped.value = false
+  
   const emulatorComponent = emulatorContainerRef.value?.emulatorRef
   const containerElement = emulatorComponent?.gameContainer
   
@@ -552,6 +589,9 @@ async function runGame() {
 }
 
 async function stopGame() {
+  // Mark as manually stopped to prevent auto-restart
+  wasManuallyStopped.value = true
+  
   const emulatorComponent = emulatorContainerRef.value?.emulatorRef
   const containerElement = emulatorComponent?.gameContainer
   
@@ -564,7 +604,35 @@ async function stopGame() {
   } else if (platform === 'NES') {
     await nesEmulator.stopGame(containerElement)
   }
+  
+  gameReady.value = false
 }
+
+// Auto-start game when cartridge is downloaded and verified
+watch([fileData, verified, loading, gameReady], async ([newFileData, newVerified, newLoading, newGameReady]) => {
+  // Auto-start conditions:
+  // 1. File data is available
+  // 2. Cartridge is verified
+  // 3. Not currently loading
+  // 4. Game is not already running
+  // 5. We have a selected version (game is selected)
+  // 6. Game was NOT manually stopped (prevent auto-restart after stop)
+  if (newFileData && newVerified && !newLoading && !newGameReady && selectedVersion.value && !wasManuallyStopped.value) {
+    // Stop any currently running game first (safety check)
+    if (gameReady.value) {
+      await stopGame()
+      await new Promise(resolve => setTimeout(resolve, 200))
+    }
+    
+    // Small delay to ensure UI is ready
+    await new Promise(resolve => setTimeout(resolve, 100))
+    // Check conditions again after delay (in case something changed)
+    if (fileData.value && verified.value && !loading.value && !gameReady.value && !wasManuallyStopped.value) {
+      console.log('Auto-starting game...')
+      await runGame()
+    }
+  }
+}, { immediate: false })
 
 // Developer mode
 const localFileData = ref(null)

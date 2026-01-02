@@ -20,30 +20,57 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// Duration is a custom type that can unmarshal duration strings from JSON
+type Duration struct {
+	time.Duration
+}
+
+// UnmarshalJSON implements json.Unmarshaler for Duration
+func (d *Duration) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	dur, err := time.ParseDuration(s)
+	if err != nil {
+		return err
+	}
+	d.Duration = dur
+	return nil
+}
+
+// MarshalJSON implements json.Marshaler for Duration
+func (d Duration) MarshalJSON() ([]byte, error) {
+	return json.Marshal(d.Duration.String())
+}
+
 // Config holds the proxy configuration
 type Config struct {
-	ListenAddr       string        `json:"listen_addr"`
-	UpstreamURL      string        `json:"upstream_url"`
-	
+	ListenAddr  string `json:"listen_addr"`
+	UpstreamURL string `json:"upstream_url"`
+
 	// Rate limiting
-	RateLimitMode    string        `json:"rate_limit_mode"`    // "global", "per_ip", "none"
-	GlobalRateLimit  float64       `json:"global_rate_limit"`  // requests per second (global)
-	GlobalBurstSize  int           `json:"global_burst_size"`  // max burst (global)
-	PerIPRateLimit   float64       `json:"per_ip_rate_limit"`  // requests per second (per IP)
-	PerIPBurstSize   int           `json:"per_ip_burst_size"`  // max burst (per IP)
-	WaitForSlot      bool          `json:"wait_for_slot"`      // if true, wait instead of reject
-	MaxWaitTime      time.Duration `json:"max_wait_time"`      // max time to wait for a slot
-	
+	RateLimitMode   string   `json:"rate_limit_mode"`   // "global", "per_ip", "none"
+	GlobalRateLimit float64  `json:"global_rate_limit"` // requests per second (global)
+	GlobalBurstSize int      `json:"global_burst_size"` // max burst (global)
+	PerIPRateLimit  float64  `json:"per_ip_rate_limit"` // requests per second (per IP)
+	PerIPBurstSize  int      `json:"per_ip_burst_size"` // max burst (per IP)
+	WaitForSlot     bool     `json:"wait_for_slot"`     // if true, wait instead of reject
+	MaxWaitTime     Duration `json:"max_wait_time"`     // max time to wait for a slot
+
 	// General
-	MaxBodySize      int64         `json:"max_body_size"`      // max request body size in bytes
-	Timeout          time.Duration `json:"timeout"`            // upstream request timeout
-	EnableCORS       bool          `json:"enable_cors"`
-	AllowedOrigins   []string      `json:"allowed_origins"`    // empty = allow all
-	LogRequests      bool          `json:"log_requests"`
-	EnableMetrics    bool          `json:"enable_metrics"`
-	
+	MaxBodySize    int64    `json:"max_body_size"` // max request body size in bytes
+	Timeout        Duration `json:"timeout"`       // upstream request timeout
+	EnableCORS     bool     `json:"enable_cors"`
+	AllowedOrigins []string `json:"allowed_origins"` // empty = allow all
+	LogRequests    bool     `json:"log_requests"`
+	EnableMetrics  bool     `json:"enable_metrics"`
+
 	// Cleanup
-	IPLimiterTTL     time.Duration `json:"ip_limiter_ttl"`     // how long to keep inactive IP limiters
+	IPLimiterTTL Duration `json:"ip_limiter_ttl"` // how long to keep inactive IP limiters
+
+	// Method filtering
+	AllowedMethods []string `json:"allowed_methods"` // empty = allow all methods
 }
 
 // Metrics tracks proxy statistics
@@ -105,7 +132,7 @@ func NewRPCProxy(config *Config) *RPCProxy {
 		config:     config,
 		ipLimiters: make(map[string]*ipLimiter),
 		client: &http.Client{
-			Timeout: config.Timeout,
+			Timeout: config.Timeout.Duration,
 			Transport: &http.Transport{
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 100,
@@ -128,6 +155,23 @@ func NewRPCProxy(config *Config) *RPCProxy {
 	}
 
 	return proxy
+}
+
+// isMethodAllowed checks if a method is in the allowed list
+func (p *RPCProxy) isMethodAllowed(method string) bool {
+	// If no allowed methods specified, allow all
+	if len(p.config.AllowedMethods) == 0 {
+		return true
+	}
+
+	// Check if method is in allowed list
+	for _, allowed := range p.config.AllowedMethods {
+		if allowed == method {
+			return true
+		}
+	}
+
+	return false
 }
 
 // getIPLimiter returns or creates a rate limiter for the given IP
@@ -163,7 +207,7 @@ func (p *RPCProxy) cleanupIPLimiters() {
 		p.ipMu.Lock()
 		now := time.Now()
 		for ip, limiter := range p.ipLimiters {
-			if now.Sub(limiter.lastAccess) > p.config.IPLimiterTTL {
+			if now.Sub(limiter.lastAccess) > p.config.IPLimiterTTL.Duration {
 				delete(p.ipLimiters, ip)
 			}
 		}
@@ -253,9 +297,9 @@ func (p *RPCProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Wait mode: wait until we can proceed (up to MaxWaitTime)
 			waitStart := time.Now()
 			ctx := r.Context()
-			if p.config.MaxWaitTime > 0 {
+			if p.config.MaxWaitTime.Duration > 0 {
 				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, p.config.MaxWaitTime)
+				ctx, cancel = context.WithTimeout(ctx, p.config.MaxWaitTime.Duration)
 				defer cancel()
 			}
 
@@ -329,18 +373,40 @@ func (p *RPCProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.metrics.BytesIn += int64(len(body))
 	p.metrics.mu.Unlock()
 
-	// Parse request to get method for logging
+	// Parse request to get method for logging and validation
 	var rpcReq JSONRPCRequest
+	var batchReq []JSONRPCRequest
+	isBatch := false
+
 	if err := json.Unmarshal(body, &rpcReq); err != nil {
 		// Try parsing as batch request
-		var batchReq []JSONRPCRequest
 		if batchErr := json.Unmarshal(body, &batchReq); batchErr != nil {
 			p.writeRPCError(w, nil, -32700, "Parse error", http.StatusBadRequest)
 			return
 		}
-		// For batch, log first method
+		isBatch = true
+		// For batch, use first request for logging
 		if len(batchReq) > 0 {
 			rpcReq = batchReq[0]
+		}
+	}
+
+	// Check if method is allowed
+	if len(p.config.AllowedMethods) > 0 {
+		if isBatch {
+			// Check all methods in batch
+			for _, req := range batchReq {
+				if !p.isMethodAllowed(req.Method) {
+					p.writeRPCError(w, req.ID, -32601, fmt.Sprintf("Method not allowed: %s", req.Method), http.StatusForbidden)
+					return
+				}
+			}
+		} else {
+			// Check single request method
+			if !p.isMethodAllowed(rpcReq.Method) {
+				p.writeRPCError(w, rpcReq.ID, -32601, fmt.Sprintf("Method not allowed: %s", rpcReq.Method), http.StatusForbidden)
+				return
+			}
 		}
 	}
 
@@ -402,7 +468,7 @@ func (p *RPCProxy) forwardRequest(ctx context.Context, body []byte) (*http.Respo
 
 func (p *RPCProxy) setCORSHeaders(w http.ResponseWriter, r *http.Request) {
 	origin := r.Header.Get("Origin")
-	
+
 	// Check if origin is allowed
 	allowed := len(p.config.AllowedOrigins) == 0
 	if !allowed {
@@ -507,20 +573,21 @@ func loadConfig(path string) (*Config, error) {
 	config := &Config{
 		ListenAddr:      ":8899",
 		UpstreamURL:     "https://api.testnet.solana.com",
-		RateLimitMode:   "per_ip",     // Per-IP by default
-		GlobalRateLimit: 100,          // 100 req/s global
-		GlobalBurstSize: 200,          // burst 200 global
-		PerIPRateLimit:  50,           // 50 req/s per IP
-		PerIPBurstSize:  100,          // burst 100 per IP
-		WaitForSlot:     true,         // Wait instead of reject
-		MaxWaitTime:     10 * time.Second,
+		RateLimitMode:   "per_ip", // Per-IP by default
+		GlobalRateLimit: 100,      // 100 req/s global
+		GlobalBurstSize: 200,      // burst 200 global
+		PerIPRateLimit:  50,       // 50 req/s per IP
+		PerIPBurstSize:  100,      // burst 100 per IP
+		WaitForSlot:     true,     // Wait instead of reject
+		MaxWaitTime:     Duration{Duration: 10 * time.Second},
 		MaxBodySize:     10 * 1024 * 1024, // 10MB
-		Timeout:         30 * time.Second,
+		Timeout:         Duration{Duration: 30 * time.Second},
 		EnableCORS:      true,
 		AllowedOrigins:  []string{"*"},
 		LogRequests:     true,
 		EnableMetrics:   true,
-		IPLimiterTTL:    10 * time.Minute,
+		IPLimiterTTL:    Duration{Duration: 10 * time.Minute},
+		AllowedMethods:  []string{}, // Empty = allow all methods
 	}
 
 	if path == "" {
@@ -570,7 +637,7 @@ func main() {
 		if port[0] == ':' {
 			port = "localhost" + port
 		}
-		
+
 		client := &http.Client{Timeout: 5 * time.Second}
 		resp, err := client.Get("http://" + port + "/health")
 		if err != nil {
@@ -578,12 +645,12 @@ func main() {
 			os.Exit(1)
 		}
 		defer resp.Body.Close()
-		
+
 		if resp.StatusCode != http.StatusOK {
 			fmt.Fprintf(os.Stderr, "Health check failed: status %d\n", resp.StatusCode)
 			os.Exit(1)
 		}
-		
+
 		fmt.Println("OK")
 		os.Exit(0)
 	}
@@ -668,7 +735,7 @@ func main() {
 	fmt.Printf("║  Listen:       %-48s ║\n", config.ListenAddr)
 	fmt.Printf("║  Upstream:     %-48s ║\n", truncateString(config.UpstreamURL, 48))
 	fmt.Printf("║  Mode:         %-48s ║\n", config.RateLimitMode)
-	
+
 	switch config.RateLimitMode {
 	case "global":
 		fmt.Printf("║  Global Rate:  %-48s ║\n", fmt.Sprintf("%.0f req/s (burst: %d)", config.GlobalRateLimit, config.GlobalBurstSize))
@@ -677,8 +744,8 @@ func main() {
 	case "none":
 		fmt.Printf("║  Rate Limit:   %-48s ║\n", "DISABLED")
 	}
-	
-	fmt.Printf("║  Wait Mode:    %-48s ║\n", fmt.Sprintf("%v (max: %s)", config.WaitForSlot, config.MaxWaitTime))
+
+	fmt.Printf("║  Wait Mode:    %-48s ║\n", fmt.Sprintf("%v (max: %s)", config.WaitForSlot, config.MaxWaitTime.Duration))
 	fmt.Printf("║  Metrics:      %-48s ║\n", fmt.Sprintf("http://localhost%s/metrics", config.ListenAddr))
 	fmt.Println("╚════════════════════════════════════════════════════════════════╝")
 	fmt.Println()

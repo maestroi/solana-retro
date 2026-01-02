@@ -137,14 +137,15 @@ const isDevMode = typeof window !== 'undefined' &&
   (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
 
 // RPC Proxy endpoints (rate-limited, recommended for downloads)
-const RPC_PROXY_PROD = 'https://rpc-solana-retro.maestroi.cc'
-const RPC_PROXY_DEV = 'http://localhost:8899'
+const RPC_PROXY_PROD = 'https://rpc-solana-retro.maestroi.cc' // Update this to your deployed domain
+const RPC_PROXY_LOCAL = 'http://localhost:8899'
 
 // Default RPC endpoints for fallback (useful for larger games)
 // Proxy endpoints are preferred as they handle rate limiting gracefully
 const DEFAULT_RPC_ENDPOINTS = [
-  isDevMode ? RPC_PROXY_DEV : RPC_PROXY_PROD,  // Proxy first (handles rate limits)
-  'https://api.testnet.solana.com',            // Fallback to public testnet
+  RPC_PROXY_PROD,  // Production proxy first (handles rate limits)
+  RPC_PROXY_LOCAL, // Local proxy as fallback
+  'https://api.testnet.solana.com', // Fallback to public testnet
 ]
 
 export function useSolanaCartridge(rpcEndpoint, cartridgeId) {

@@ -548,9 +548,9 @@ export class CartridgeClient {
         currentTx: signatures[signatures.length - 1],
       });
       
-      // Small delay between batches to avoid overwhelming RPC (200ms vs 400ms per chunk)
+      // Small delay between batches to avoid overwhelming RPC (reduced from 200ms for faster uploads)
       if (chunksWritten < numChunks) {
-        await sleep(200);
+        await sleep(50); // Reduced delay for faster uploads
       }
     }
     

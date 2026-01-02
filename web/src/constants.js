@@ -8,6 +8,7 @@ import { PublicKey } from '@solana/web3.js'
 export const IGNORED_CARTRIDGE_HASHES = new Set([
   '3ad4d86d6576ae358b29ca8b1a5c7fcf56723846e900628a1c9d54fa081be12d',
   'f9105991050e12e268c3e0b7fcda54d9dd2469073d60e71809fc1446e7cf5caa',
+  'd9e861c1f9eff8ead43195b4cc89dea3a9cf181de39f1c02ef1e68cdb7e409e5', // NES test game (not actually a game)
 ])
 
 /**
