@@ -1,6 +1,7 @@
 import { ref, computed } from 'vue'
 import { Connection, PublicKey } from '@solana/web3.js'
 import { useCache } from './useCache.js'
+import { createRateLimiter, isCustomRpcEndpoint } from '../utils.js'
 
 /**
  * Solana Cartridge loader composable
@@ -8,7 +9,7 @@ import { useCache } from './useCache.js'
  */
 
 // Program constants
-const PROGRAM_ID = new PublicKey('CartS1QpBgPfpgq4RpPpXVuvN4SrJvYNXBfW9D1Rmvp')
+const PROGRAM_ID = new PublicKey('iXBRbJjLtohupYmSDz3diKTVz2wU8NXe4gezFsSNcy1')
 const MANIFEST_SEED = Buffer.from('manifest')
 const CHUNK_SEED = Buffer.from('chunk')
 
@@ -25,7 +26,7 @@ function deriveChunkPDA(cartridgeId, chunkIndex) {
   return PublicKey.findProgramAddressSync([CHUNK_SEED, Buffer.from(idBytes), chunkIndexBuffer], PROGRAM_ID)
 }
 
-// Decode functions
+// Decode functions - zero-copy layout with padding
 function decodeCartridgeManifest(data) {
   const buffer = Buffer.from(data)
   let offset = 8 // Skip discriminator
@@ -48,6 +49,9 @@ function decodeCartridgeManifest(data) {
   const finalized = buffer.readUInt8(offset) !== 0
   offset += 1
   
+  // Skip finalized padding (7 bytes)
+  offset += 7
+  
   const createdSlot = buffer.readBigUInt64LE(offset)
   offset += 8
   
@@ -59,6 +63,9 @@ function decodeCartridgeManifest(data) {
   
   const bump = buffer.readUInt8(offset)
   offset += 1
+  
+  // Skip metadata padding (5 bytes)
+  offset += 5
   
   const metadata = buffer.subarray(offset, offset + metadataLen)
   
@@ -77,6 +84,7 @@ function decodeCartridgeManifest(data) {
   }
 }
 
+// Decode chunk - zero-copy layout with padding (fixed-size array, not Vec)
 function decodeCartridgeChunk(data) {
   const buffer = Buffer.from(data)
   let offset = 8 // Skip discriminator
@@ -89,11 +97,10 @@ function decodeCartridgeChunk(data) {
   
   offset += 1 // written
   offset += 1 // bump
+  offset += 6 // padding
   
-  const vecLen = buffer.readUInt32LE(offset)
-  offset += 4
-  
-  const chunkData = new Uint8Array(buffer.subarray(offset, offset + Math.min(vecLen, dataLen)))
+  // Data is a fixed-size array (not Vec), read dataLen bytes
+  const chunkData = new Uint8Array(buffer.subarray(offset, offset + dataLen))
   
   return chunkData
 }
@@ -124,6 +131,16 @@ async function verifySHA256(data, expectedHash) {
   return hashHex.toLowerCase() === expectedHex.toLowerCase()
 }
 
+// Default RPC endpoints for fallback (useful for larger games)
+// Multiple endpoints help distribute load and avoid rate limits
+// Testnet limits: 100 req/10s per IP (total), 40 req/10s per RPC
+const DEFAULT_RPC_ENDPOINTS = [
+  'https://api.testnet.solana.com',
+  'https://rpc.testnet.soo.network/rpc',
+  // Note: Additional public endpoints can be added here
+  // Some may require API keys or have different rate limits
+]
+
 export function useSolanaCartridge(rpcEndpoint, cartridgeId) {
   const loading = ref(false)
   const error = ref(null)
@@ -140,6 +157,96 @@ export function useSolanaCartridge(rpcEndpoint, cartridgeId) {
   })
 
   const cache = useCache()
+
+  // Rate limiter to prevent 429 errors
+  // Testnet limits: 40 requests per 10 seconds per RPC endpoint
+  // Will be disabled for custom RPC endpoints
+  const rateLimiter = createRateLimiter(40, 10000) // 40 requests per 10 seconds
+
+  // Round-robin counter for load balancing across endpoints
+  let endpointRoundRobin = 0
+
+  // Get RPC endpoints to use - primary + fallbacks
+  // Distributes load across multiple endpoints to avoid rate limits
+  function getRpcEndpoints() {
+    const primary = rpcEndpoint.value
+    if (!primary) return []
+    
+    // If primary is custom, only use it (no rate limiting)
+    const isPrimaryCustom = isCustomRpcEndpoint(primary)
+    if (isPrimaryCustom) {
+      return [primary]
+    }
+    
+    // For public endpoints, include multiple for load distribution
+    const endpoints = [primary]
+    
+    // Add default RPCs as fallbacks if they're different from primary
+    // This helps distribute load across multiple endpoints
+    for (const defaultRpc of DEFAULT_RPC_ENDPOINTS) {
+      if (defaultRpc !== primary && !endpoints.includes(defaultRpc)) {
+        endpoints.push(defaultRpc)
+      }
+    }
+    
+    return endpoints
+  }
+
+  // Get next endpoint using round-robin for load balancing
+  function getNextEndpoint() {
+    const endpoints = getRpcEndpoints()
+    if (endpoints.length === 0) return null
+    
+    // Use round-robin to distribute load
+    const endpoint = endpoints[endpointRoundRobin % endpoints.length]
+    endpointRoundRobin = (endpointRoundRobin + 1) % endpoints.length
+    return endpoint
+  }
+
+  // Try to fetch with fallback RPCs, using round-robin for load balancing
+  async function fetchWithFallback(fetchFn, description) {
+    const endpoints = getRpcEndpoints()
+    if (endpoints.length === 0) {
+      throw new Error('No RPC endpoints available')
+    }
+    
+    // Try primary endpoint first (or round-robin selected)
+    let lastError = null
+    const maxRetries = endpoints.length * 2 // Try each endpoint up to 2 times
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const endpoint = getNextEndpoint()
+      if (!endpoint) break
+      
+      try {
+        // Only rate limit for non-custom endpoints
+        const isCustom = isCustomRpcEndpoint(endpoint)
+        if (!isCustom && rateLimiter._enabled) {
+          await rateLimiter.rateLimit()
+        }
+        
+        const connection = new Connection(endpoint, 'confirmed')
+        const result = await fetchFn(connection)
+        return result
+      } catch (err) {
+        // Check if it's a 429 error and handle Retry-After
+        if (err.message && (err.message.includes('429') || err.message.includes('Too Many Requests'))) {
+          const isCustom = isCustomRpcEndpoint(endpoint)
+          if (!isCustom) {
+            rateLimiter.handle429Error(err)
+            // Wait a bit before retrying
+            await new Promise(resolve => setTimeout(resolve, 1000))
+          }
+        }
+        
+        console.warn(`Failed to ${description} using ${endpoint} (attempt ${attempt + 1}):`, err.message)
+        lastError = err
+        // Continue to next endpoint
+      }
+    }
+    
+    throw lastError || new Error(`Failed to ${description} with all RPC endpoints`)
+  }
 
   const progressPercent = computed(() => {
     if (progress.value.expectedChunks === 0) return 0
@@ -159,10 +266,12 @@ export function useSolanaCartridge(rpcEndpoint, cartridgeId) {
     console.log('Loading cartridge info for:', cartridgeId.value)
 
     try {
-      const connection = new Connection(rpcEndpoint.value, 'confirmed')
       const [manifestPDA] = deriveManifestPDA(cartridgeId.value)
       
-      const manifestInfo = await connection.getAccountInfo(manifestPDA)
+      const manifestInfo = await fetchWithFallback(
+        async (connection) => await connection.getAccountInfo(manifestPDA),
+        'fetch manifest'
+      )
       
       if (!manifestInfo) {
         error.value = 'Cartridge manifest not found'
@@ -246,8 +355,6 @@ export function useSolanaCartridge(rpcEndpoint, cartridgeId) {
     const startTime = Date.now()
 
     try {
-      const connection = new Connection(rpcEndpoint.value, 'confirmed')
-      
       // First get manifest if not already loaded
       if (!cartHeader.value) {
         await loadCartridgeInfo()
@@ -282,12 +389,47 @@ export function useSolanaCartridge(rpcEndpoint, cartridgeId) {
       const chunks = new Array(numChunks).fill(null)
       let chunksLoaded = 0
       let bytesLoaded = 0
+      const endpoints = getRpcEndpoints()
 
       for (let batchStart = 0; batchStart < chunkPDAs.length; batchStart += BATCH_SIZE) {
         const batchEnd = Math.min(batchStart + BATCH_SIZE, chunkPDAs.length)
         const batchPDAs = chunkPDAs.slice(batchStart, batchEnd)
         
-        const accountInfos = await connection.getMultipleAccountsInfo(batchPDAs)
+        // Try fetching batch with fallback RPCs
+        let accountInfos = null
+        let lastError = null
+        
+        for (const endpoint of endpoints) {
+          try {
+            // Only rate limit for non-custom endpoints
+            const isCustom = isCustomRpcEndpoint(endpoint)
+            if (!isCustom && rateLimiter._enabled) {
+              await rateLimiter.rateLimit()
+            }
+            
+            const connection = new Connection(endpoint, 'confirmed')
+            accountInfos = await connection.getMultipleAccountsInfo(batchPDAs)
+            break // Success, exit loop
+          } catch (err) {
+            // Check if it's a 429 error and handle Retry-After
+            if (err.message && (err.message.includes('429') || err.message.includes('Too Many Requests'))) {
+              const isCustom = isCustomRpcEndpoint(endpoint)
+              if (!isCustom) {
+                rateLimiter.handle429Error(err)
+                // Wait before retrying
+                await new Promise(resolve => setTimeout(resolve, 1000))
+              }
+            }
+            
+            console.warn(`Failed to fetch batch ${batchStart}-${batchEnd} using ${endpoint}:`, err.message)
+            lastError = err
+            // Continue to next endpoint
+          }
+        }
+        
+        if (!accountInfos) {
+          throw lastError || new Error(`Failed to fetch batch ${batchStart}-${batchEnd} with all RPC endpoints`)
+        }
         
         for (let i = 0; i < accountInfos.length; i++) {
           const info = accountInfos[i]

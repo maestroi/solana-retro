@@ -8,8 +8,9 @@
  */
 export async function sha256(data: Uint8Array): Promise<Uint8Array> {
   if (typeof crypto !== 'undefined' && crypto.subtle) {
-    // Browser/modern Node
-    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    // Browser/modern Node - create a copy to ensure we have a standard ArrayBuffer
+    const buffer = new Uint8Array(data).buffer;
+    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
     return new Uint8Array(hashBuffer);
   } else {
     // Node.js fallback

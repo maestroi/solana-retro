@@ -109,8 +109,15 @@ Vue.js frontend with Solana integration composables:
 ### 1. Setup Solana CLI
 
 ```bash
-# Install Solana CLI
-sh -c "$(curl -sSfL https://release.solana.com/v1.17.0/install)"
+# Install Solana CLI (latest version)
+sh -c "$(curl -sSfL https://release.solana.com/stable/install)"
+
+# Add Solana to PATH (if not already added)
+export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+
+# Install Solana platform tools (cargo-build-sbf)
+# This is typically included with modern Solana CLI installations
+# If missing, install via: cargo install cargo-build-sbf
 
 # Configure for devnet
 solana config set --url devnet
@@ -120,7 +127,32 @@ solana-keygen new
 
 # Get devnet SOL
 solana airdrop 5
+
+# Verify platform tools are installed
+cargo-build-sbf --version
+solana --version
 ```
+
+### 1.5. Install Anchor CLI
+
+```bash
+# Install Anchor Version Manager (avm)
+cargo install --git https://github.com/coral-xyz/anchor avm --locked --force
+
+# Install latest Anchor version (0.32.1)
+avm install latest
+avm use latest
+
+# Verify installation
+anchor --version
+```
+
+Alternatively, you can install Anchor directly via cargo (not recommended for version management):
+```bash
+cargo install --git https://github.com/coral-xyz/anchor anchor-cli --locked
+```
+
+> **Note**: The project uses Anchor 0.32.1 (latest). The `Anchor.toml` file includes `[toolchain] anchor_version = "0.32.1"` to ensure version consistency.
 
 ### 2. Build & Deploy Program
 
@@ -133,8 +165,8 @@ yarn install
 # Build the program
 anchor build
 
-# Deploy to devnet
-anchor deploy --provider.cluster devnet
+# Deploy to testnet
+anchor deploy --provider.cluster testnet
 
 # Note the program ID and update if different from default
 ```

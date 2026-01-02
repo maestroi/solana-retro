@@ -4,7 +4,7 @@ import { PublicKey } from '@solana/web3.js';
  * Program ID for the cartridge storage program
  * This should match the declared ID in the Anchor program
  */
-export const PROGRAM_ID = new PublicKey('CartS1QpBgPfpgq4RpPpXVuvN4SrJvYNXBfW9D1Rmvp');
+export const PROGRAM_ID = new PublicKey('iXBRbJjLtohupYmSDz3diKTVz2wU8NXe4gezFsSNcy1');
 
 /**
  * PDA Seeds
@@ -20,14 +20,16 @@ export const CHUNK_SEED = Buffer.from('chunk');
 export const MAX_CARTRIDGE_SIZE = 6 * 1024 * 1024;
 
 /**
- * Default chunk size (128KB)
+ * Default chunk size (800 bytes) - must fit within Solana transaction limits
+ * Solana transactions are limited to ~1232 bytes, leaving ~800 bytes for chunk data
+ * after accounting for signatures, account keys, and instruction overhead.
  */
-export const DEFAULT_CHUNK_SIZE = 128 * 1024;
+export const DEFAULT_CHUNK_SIZE = 800;
 
 /**
- * Entries per catalog page
+ * Entries per catalog page - matches Rust program
  */
-export const ENTRIES_PER_PAGE = 32;
+export const ENTRIES_PER_PAGE = 16;
 
 /**
  * Maximum metadata length
@@ -35,13 +37,13 @@ export const ENTRIES_PER_PAGE = 32;
 export const MAX_METADATA_LEN = 256;
 
 /**
- * Account discriminators (first 8 bytes of sha256("account:<AccountName>"))
+ * Account discriminators (from IDL)
  */
 export const DISCRIMINATORS = {
-  catalogRoot: Buffer.from([0x14, 0x9c, 0x1c, 0x8b, 0x5d, 0x3e, 0x2f, 0xa1]),
-  catalogPage: Buffer.from([0x2e, 0x8f, 0x3c, 0x4d, 0x6b, 0x7a, 0x9e, 0xb2]),
-  cartridgeManifest: Buffer.from([0x3f, 0xa0, 0x4e, 0x5c, 0x7d, 0x8e, 0xaf, 0xc3]),
-  cartridgeChunk: Buffer.from([0x4b, 0xb1, 0x5f, 0x6d, 0x8e, 0x9f, 0xb0, 0xd4]),
+  catalogRoot: Buffer.from([7, 54, 99, 80, 21, 237, 6, 124]),
+  catalogPage: Buffer.from([55, 86, 8, 29, 191, 46, 148, 13]),
+  cartridgeManifest: Buffer.from([48, 216, 242, 54, 127, 213, 134, 79]),
+  cartridgeChunk: Buffer.from([59, 21, 107, 80, 137, 203, 153, 173]),
 };
 
 /**

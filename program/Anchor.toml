@@ -1,15 +1,18 @@
+[toolchain]
+anchor_version = "0.32.1"
+
 [features]
 seeds = false
 skip-lint = false
 
 [programs.localnet]
-cartridge_storage = "CartS1QpBgPfpgq4RpPpXVuvN4SrJvYNXBfW9D1Rmvp"
+cartridge_storage = "iXBRbJjLtohupYmSDz3diKTVz2wU8NXe4gezFsSNcy1"
 
 [programs.devnet]
-cartridge_storage = "CartS1QpBgPfpgq4RpPpXVuvN4SrJvYNXBfW9D1Rmvp"
+cartridge_storage = "iXBRbJjLtohupYmSDz3diKTVz2wU8NXe4gezFsSNcy1"
 
 [programs.testnet]
-cartridge_storage = "CartS1QpBgPfpgq4RpPpXVuvN4SrJvYNXBfW9D1Rmvp"
+cartridge_storage = "iXBRbJjLtohupYmSDz3diKTVz2wU8NXe4gezFsSNcy1"
 
 [registry]
 url = "https://api.apr.dev"

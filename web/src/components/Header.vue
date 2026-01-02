@@ -21,12 +21,12 @@
             <div class="absolute right-0 top-8 w-80 bg-gray-800 border border-gray-700 rounded-lg shadow-xl p-4 z-50 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200">
               <h3 class="text-sm font-semibold text-white mb-3">How It Works</h3>
               <div class="text-xs text-gray-300 space-y-2">
-                <p><strong class="text-gray-200">1. Storage:</strong> Games are split into 128KB chunks stored in Solana PDAs.</p>
-                <p><strong class="text-gray-200">2. Discover:</strong> Frontend queries the catalog accounts to find available games.</p>
-                <p><strong class="text-gray-200">3. Download:</strong> Manifest and chunk accounts are fetched and reassembled into ZIP.</p>
-                <p><strong class="text-gray-200">4. Verify:</strong> SHA256 hash verification ensures data integrity.</p>
-                <p><strong class="text-gray-200">5. Run:</strong> Games run directly in your browser using WebAssembly emulators.</p>
-                <p class="pt-2 border-t border-gray-700 text-gray-400">All data is stored permanently on-chain using content-addressed IDs.</p>
+                <p><strong class="text-gray-200">1. Storage:</strong> Games are split into 128KB chunks stored in Solana PDAs (Program Derived Addresses).</p>
+                <p><strong class="text-gray-200">2. Discover:</strong> Frontend queries the catalog accounts on Solana to find available games.</p>
+                <p><strong class="text-gray-200">3. Download:</strong> Manifest and chunk accounts are fetched from Solana and reassembled into ZIP. Multiple RPC endpoints are used for reliability.</p>
+                <p><strong class="text-gray-200">4. Verify:</strong> SHA256 hash verification ensures data integrity before running.</p>
+                <p><strong class="text-gray-200">5. Run:</strong> Games run directly in your browser using WebAssembly emulators (DOS, Game Boy, NES).</p>
+                <p class="pt-2 border-t border-gray-700 text-gray-400">All data is stored permanently on-chain using content-addressed IDs. Currently supports Testnet network.</p>
               </div>
             </div>
           </div>
@@ -49,7 +49,7 @@
               :value="customRpcEndpoint"
               @input="$emit('update:custom-rpc', $event.target.value)"
               @keyup.enter="$emit('update:custom-rpc', $event.target.value)"
-              placeholder="Enter RPC URL (e.g., https://api.devnet.solana.com)"
+              placeholder="Enter RPC URL (e.g., https://api.testnet.solana.com)"
               type="url"
               class="text-sm rounded-md border-gray-600 bg-gray-700 text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500 px-3 py-1.5 min-w-[300px] flex-1"
             />

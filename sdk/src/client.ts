@@ -65,16 +65,32 @@ export class CartridgeClient {
   public connection: Connection;
   public programId: PublicKey;
 
+  /**
+   * Create a new CartridgeClient instance
+   * @param connectionOrEndpoint - Connection instance, RPC URL string, or network name ('mainnet', 'devnet', 'testnet', 'localnet')
+   * @param programId - Optional program ID (defaults to PROGRAM_ID)
+   * @param wsEndpoint - Optional WebSocket endpoint URL (for custom RPC providers)
+   */
   constructor(
     connectionOrEndpoint: Connection | string | NetworkName,
-    programId: PublicKey = PROGRAM_ID
+    programId: PublicKey = PROGRAM_ID,
+    wsEndpoint?: string
   ) {
     if (connectionOrEndpoint instanceof Connection) {
       this.connection = connectionOrEndpoint;
     } else if (connectionOrEndpoint in ENDPOINTS) {
-      this.connection = new Connection(ENDPOINTS[connectionOrEndpoint as NetworkName], 'confirmed');
+      this.connection = new Connection(ENDPOINTS[connectionOrEndpoint as NetworkName], {
+        commitment: 'confirmed',
+        wsEndpoint: wsEndpoint,
+      });
     } else {
-      this.connection = new Connection(connectionOrEndpoint, 'confirmed');
+      // For custom RPC URLs, disable WebSocket if not provided to avoid connection errors
+      this.connection = new Connection(connectionOrEndpoint, {
+        commitment: 'confirmed',
+        wsEndpoint: wsEndpoint,
+        // Use longer timeout for confirmation polling when WebSocket is not available
+        confirmTransactionInitialTimeout: 60000,
+      });
     }
     this.programId = programId;
   }
@@ -342,8 +358,8 @@ export class CartridgeClient {
     const [catalogRootPDA] = deriveCatalogRootPDA(this.programId);
     
     // Build instruction data: [discriminator (8 bytes)]
-    // Discriminator for initialize_catalog: hash("global:initialize_catalog")[0:8]
-    const discriminator = Buffer.from([175, 176, 144, 190, 173, 55, 160, 243]); // anchor discriminator
+    // Discriminator from IDL: initialize_catalog
+    const discriminator = Buffer.from([30, 195, 79, 55, 197, 11, 102, 111]);
     
     const ix = new TransactionInstruction({
       keys: [
@@ -366,8 +382,8 @@ export class CartridgeClient {
     const [catalogRootPDA] = deriveCatalogRootPDA(this.programId);
     const [catalogPagePDA] = deriveCatalogPagePDA(pageIndex, this.programId);
     
-    // Discriminator + page_index (u32 LE)
-    const discriminator = Buffer.from([183, 149, 12, 91, 187, 130, 85, 215]);
+    // Discriminator + page_index (u32 LE) - from IDL: create_catalog_page
+    const discriminator = Buffer.from([67, 7, 187, 145, 124, 143, 146, 71]);
     const data = Buffer.alloc(12);
     discriminator.copy(data);
     data.writeUInt32LE(pageIndex, 8);
@@ -465,7 +481,12 @@ export class CartridgeClient {
     });
     
     for (let i = 0; i < chunks.length; i++) {
-      const chunkSig = await this.writeChunk(publisher, cartridgeId, i, chunks[i]);
+      // Retry chunk write with exponential backoff
+      const chunkSig = await retry(
+        () => this.writeChunk(publisher, cartridgeId, i, chunks[i]),
+        5,  // max retries
+        1000 // base delay 1 second
+      );
       signatures.push(chunkSig);
       
       onProgress?.({
@@ -475,9 +496,9 @@ export class CartridgeClient {
         currentTx: chunkSig,
       });
       
-      // Small delay between chunks to avoid rate limiting
+      // Delay between chunks to avoid rate limiting (400ms for public RPCs)
       if (i < chunks.length - 1) {
-        await sleep(100);
+        await sleep(400);
       }
     }
     
@@ -534,8 +555,8 @@ export class CartridgeClient {
   ): Promise<string> {
     const [manifestPDA] = deriveManifestPDA(cartridgeId, this.programId);
     
-    // Build instruction data
-    const discriminator = Buffer.from([220, 174, 193, 148, 200, 228, 66, 67]);
+    // Build instruction data - from IDL: create_manifest
+    const discriminator = Buffer.from([223, 153, 230, 62, 181, 232, 110, 143]);
     
     // Calculate data size
     const dataSize = 8 + 32 + 8 + 4 + 32 + 4 + metadata.length;
@@ -588,8 +609,8 @@ export class CartridgeClient {
     const [manifestPDA] = deriveManifestPDA(cartridgeId, this.programId);
     const [chunkPDA] = deriveChunkPDA(cartridgeId, chunkIndex, this.programId);
     
-    // Build instruction data
-    const discriminator = Buffer.from([54, 167, 198, 40, 102, 210, 159, 225]);
+    // Build instruction data - from IDL: write_chunk
+    const discriminator = Buffer.from([93, 141, 167, 15, 209, 133, 137, 51]);
     
     const dataSize = 8 + 32 + 4 + 4 + chunkData.length;
     const data = Buffer.alloc(dataSize);
@@ -641,8 +662,8 @@ export class CartridgeClient {
     const [catalogRootPDA] = deriveCatalogRootPDA(this.programId);
     const [catalogPagePDA] = deriveCatalogPagePDA(pageIndex, this.programId);
     
-    // Build instruction data
-    const discriminator = Buffer.from([203, 156, 116, 96, 95, 125, 187, 94]);
+    // Build instruction data - from IDL: finalize_cartridge
+    const discriminator = Buffer.from([71, 140, 250, 231, 42, 63, 135, 31]);
     
     const dataSize = 8 + 32 + 4;
     const data = Buffer.alloc(dataSize);

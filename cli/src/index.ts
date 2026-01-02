@@ -7,37 +7,25 @@ import ora from 'ora';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// Import SDK functions inline (avoid build issues)
+// Import from SDK package
 import {
   PROGRAM_ID,
   DEFAULT_CHUNK_SIZE,
   MAX_CARTRIDGE_SIZE,
   ENTRIES_PER_PAGE,
-  CATALOG_ROOT_SEED,
-  CATALOG_PAGE_SEED,
-  MANIFEST_SEED,
-  CHUNK_SEED,
-} from '../../sdk/src/constants.js';
-
-import {
   deriveCatalogRootPDA,
   deriveCatalogPagePDA,
   deriveManifestPDA,
   deriveChunkPDA,
-} from '../../sdk/src/pda.js';
-
-import {
   decodeCatalogRoot,
   decodeCatalogPage,
   decodeCartridgeManifest,
-} from '../../sdk/src/decoder.js';
-
-import {
   sha256,
   bytesToHex,
   hexToBytes,
   formatBytes,
-} from '../../sdk/src/utils.js';
+  CartridgeClient,
+} from '@solana-retro/sdk';
 
 const ENDPOINTS = {
   mainnet: 'https://api.mainnet-beta.solana.com',
@@ -45,6 +33,15 @@ const ENDPOINTS = {
   testnet: 'https://api.testnet.solana.com',
   localnet: 'http://localhost:8899',
 };
+
+// Helper to create ASCII progress bar
+function createProgressBar(current: number, total: number, width: number): string {
+  const percent = total > 0 ? current / total : 0;
+  const filled = Math.round(width * percent);
+  const empty = width - filled;
+  const bar = chalk.green('█'.repeat(filled)) + chalk.gray('░'.repeat(empty));
+  return `[${bar}]`;
+}
 
 const program = new Command();
 
@@ -57,6 +54,7 @@ program
 program
   .option('-n, --network <network>', 'Solana network (mainnet, devnet, testnet, localnet)', 'devnet')
   .option('-u, --url <url>', 'Custom RPC URL (overrides --network)')
+  .option('-w, --ws-url <url>', 'Custom WebSocket URL (for providers with separate WS endpoints)')
   .option('-k, --keypair <path>', 'Path to keypair file', '~/.config/solana/id.json');
 
 /**
@@ -330,16 +328,85 @@ program
       
       console.log(chalk.green('\n🚀 Starting publish...\n'));
       
-      // Note: Full publish implementation would use the CartridgeClient
-      // For now, we show what would happen
-      console.log(chalk.gray('Publishing is handled by the SDK. Use:'));
-      console.log(chalk.cyan('\n  import { CartridgeClient } from "@solana-retro/sdk";'));
-      console.log(chalk.cyan('  const client = new CartridgeClient("devnet");'));
-      console.log(chalk.cyan('  await client.publishCartridge(keypair, zipBytes);'));
+      // Create client with optional WebSocket URL
+      const client = new CartridgeClient(
+        globalOptions.url || globalOptions.network,
+        undefined, // use default program ID
+        globalOptions.wsUrl
+      );
+      
+      let lastProgressLine = '';
+      const startTime = Date.now();
+      
+      // Publish the cartridge
+      const result = await client.publishCartridge(keypair, zipBytes, {
+        chunkSize,
+        metadata: cmdOptions.metadata ? JSON.parse(cmdOptions.metadata) : {},
+        onProgress: (progress) => {
+          switch (progress.phase) {
+            case 'preparing':
+              spinner.text = 'Preparing cartridge...';
+              break;
+            case 'manifest':
+              spinner.text = 'Creating manifest...';
+              break;
+            case 'chunks':
+              // Stop spinner for chunk progress to avoid flickering
+              if (spinner.isSpinning) {
+                spinner.stop();
+              }
+              const percent = ((progress.chunksWritten / progress.totalChunks) * 100).toFixed(1);
+              const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
+              const rate = progress.chunksWritten > 0 ? (progress.chunksWritten / ((Date.now() - startTime) / 1000)).toFixed(1) : '0';
+              const eta = progress.chunksWritten > 0 
+                ? Math.ceil((progress.totalChunks - progress.chunksWritten) / (progress.chunksWritten / ((Date.now() - startTime) / 1000)))
+                : '--';
+              
+              const progressBar = createProgressBar(progress.chunksWritten, progress.totalChunks, 30);
+              const line = `\r${chalk.cyan('  ⬆')} ${progressBar} ${chalk.yellow(percent + '%')} ${chalk.gray(`[${progress.chunksWritten}/${progress.totalChunks}]`)} ${chalk.gray(`${elapsed}s elapsed, ~${eta}s remaining, ${rate} tx/s`)}`;
+              
+              // Use process.stdout.write for in-place updates
+              process.stdout.write(line);
+              lastProgressLine = line;
+              break;
+            case 'finalizing':
+              if (lastProgressLine) {
+                process.stdout.write('\n'); // New line after progress bar
+              }
+              spinner.start();
+              spinner.text = 'Finalizing cartridge...';
+              break;
+            case 'complete':
+              spinner.succeed('Cartridge published!');
+              break;
+          }
+        },
+      });
+      
+      if (result.alreadyExists) {
+        spinner.warn('Cartridge already exists');
+      }
+      
+      console.log(chalk.cyan('\n═══════════════════════════════════════════════════════════════'));
+      console.log(chalk.cyan('                    PUBLISH COMPLETE'));
+      console.log(chalk.cyan('═══════════════════════════════════════════════════════════════\n'));
+      
+      console.log(`${chalk.gray('Cartridge ID:')} ${result.cartridgeIdHex}`);
+      console.log(`${chalk.gray('Manifest PDA:')} ${result.manifestPubkey.toBase58()}`);
+      console.log(`${chalk.gray('Transactions:')} ${result.signatures.length}`);
+      
+      if (result.signatures.length > 0) {
+        console.log(`\n${chalk.gray('First signature:')} ${result.signatures[0]}`);
+        console.log(`${chalk.gray('Last signature:')}  ${result.signatures[result.signatures.length - 1]}`);
+      }
       
     } catch (error: any) {
       spinner.fail('Failed to publish cartridge');
       console.error(chalk.red(error.message));
+      if (error.logs) {
+        console.error(chalk.gray('\nProgram logs:'));
+        error.logs.forEach((log: string) => console.error(chalk.gray(`  ${log}`)));
+      }
     }
   });
 
@@ -349,23 +416,37 @@ program
 program
   .command('init')
   .description('Initialize the catalog (admin only, one-time setup)')
-  .action(async () => {
+  .option('--create-page', 'Also create the first catalog page')
+  .action(async (cmdOptions) => {
     const globalOptions = program.opts();
-    const connection = getConnection(globalOptions);
+    const client = new CartridgeClient(
+      globalOptions.url || globalOptions.network,
+      undefined,
+      globalOptions.wsUrl
+    );
     
     const spinner = ora('Checking catalog status...').start();
     
     try {
       // Check if already initialized
-      const [catalogRootPDA] = deriveCatalogRootPDA(PROGRAM_ID);
-      const existingRoot = await connection.getAccountInfo(catalogRootPDA);
+      const existingRoot = await client.getCatalogRoot();
       
       if (existingRoot) {
-        const root = decodeCatalogRoot(existingRoot.data);
         spinner.warn('Catalog already initialized');
-        console.log(`\n${chalk.gray('Admin:')}      ${root.admin.toBase58()}`);
-        console.log(`${chalk.gray('Cartridges:')} ${root.totalCartridges}`);
-        console.log(`${chalk.gray('Pages:')}      ${root.pageCount}`);
+        console.log(`\n${chalk.gray('Admin:')}      ${existingRoot.admin.toBase58()}`);
+        console.log(`${chalk.gray('Cartridges:')} ${existingRoot.totalCartridges}`);
+        console.log(`${chalk.gray('Pages:')}      ${existingRoot.pageCount}`);
+        
+        // Check if we need to create the first page
+        if (existingRoot.pageCount === 0 && cmdOptions.createPage) {
+          const keypair = loadKeypair(globalOptions.keypair);
+          spinner.start('Creating first catalog page...');
+          const sig = await client.createCatalogPage(keypair, 0);
+          spinner.succeed('Created catalog page 0');
+          console.log(`${chalk.gray('Signature:')} ${sig}`);
+        } else if (existingRoot.pageCount === 0) {
+          console.log(chalk.yellow('\n⚠ No catalog pages exist. Run with --create-page to create page 0'));
+        }
         return;
       }
       
@@ -373,19 +454,39 @@ program
       const keypair = loadKeypair(globalOptions.keypair);
       console.log(`\n${chalk.gray('Admin:')} ${keypair.publicKey.toBase58()}`);
       
+      // Check balance
+      const balance = await client.getBalance(keypair.publicKey);
+      console.log(`${chalk.gray('Balance:')} ${balance.toFixed(4)} SOL`);
+      
+      if (balance < 0.01) {
+        spinner.fail('Insufficient balance');
+        console.log(chalk.yellow('\nNeed at least 0.01 SOL. Run: cartridge-cli airdrop'));
+        return;
+      }
+      
       spinner.text = 'Initializing catalog...';
       
-      // Note: This would call the actual instruction
-      console.log(chalk.gray('\nInitialization is handled by the SDK. Use:'));
-      console.log(chalk.cyan('\n  import { CartridgeClient } from "@solana-retro/sdk";'));
-      console.log(chalk.cyan('  const client = new CartridgeClient("devnet");'));
-      console.log(chalk.cyan('  await client.initializeCatalog(adminKeypair);'));
+      const signature = await client.initializeCatalog(keypair);
+      spinner.succeed('Catalog initialized!');
+      console.log(`\n${chalk.gray('Signature:')} ${signature}`);
       
-      spinner.info('Manual initialization required');
+      // Optionally create first page
+      if (cmdOptions.createPage) {
+        spinner.start('Creating first catalog page...');
+        const pageSig = await client.createCatalogPage(keypair, 0);
+        spinner.succeed('Created catalog page 0');
+        console.log(`${chalk.gray('Signature:')} ${pageSig}`);
+      } else {
+        console.log(chalk.yellow('\nNote: Run with --create-page to also create the first catalog page'));
+      }
       
     } catch (error: any) {
       spinner.fail('Failed to initialize catalog');
       console.error(chalk.red(error.message));
+      if (error.logs) {
+        console.error(chalk.gray('\nProgram logs:'));
+        error.logs.forEach((log: string) => console.error(chalk.gray(`  ${log}`)));
+      }
     }
   });
 

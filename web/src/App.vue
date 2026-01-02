@@ -168,32 +168,33 @@ import { useGbEmulator } from './composables/useGbEmulator.js'
 import { useNesEmulator } from './composables/useNesEmulator.js'
 
 // Solana RPC Configuration
+// Support multiple RPC endpoints - primary for catalog, fallback for larger game downloads
+const defaultRpcEndpoints = [
+  'https://api.testnet.solana.com'
+]
+
 const rpcEndpoints = ref([
-  { name: 'Solana Devnet', url: 'https://api.devnet.solana.com' },
   { name: 'Solana Testnet', url: 'https://api.testnet.solana.com' },
-  { name: 'Solana Mainnet', url: 'https://api.mainnet-beta.solana.com' },
   { name: 'Custom...', url: 'custom' }
 ])
 
-const selectedRpcEndpoint = ref('https://api.devnet.solana.com')
+const selectedRpcEndpoint = ref('https://api.testnet.solana.com')
 const customRpcEndpoint = ref('')
 const rpcClient = ref(new SolanaRPC(selectedRpcEndpoint.value))
 
-// Configuration - Solana networks as "catalogs"
+// Configuration - Solana networks as "catalogs" (simplified to match RPC endpoints)
 const catalogs = ref([
-  { name: 'Devnet', address: 'devnet' },
-  { name: 'Testnet', address: 'testnet', devOnly: true },
-  { name: 'Mainnet', address: 'mainnet' },
+  { name: 'Testnet', address: 'testnet' },
   { name: 'Custom...', address: 'custom' }
 ])
-const selectedCatalogName = ref('Devnet') // Default to Devnet
+const selectedCatalogName = ref('Testnet') // Default to Testnet
 const customCatalogAddress = ref('')
 
 // Developer Mode
 const developerMode = ref(false)
 const showRetiredGames = ref(false)
 
-// Visible catalogs (hide Testnet unless in developer mode)
+// Visible catalogs (filter out dev-only catalogs unless in developer mode)
 const visibleCatalogs = computed(() => {
   if (developerMode.value) {
     return catalogs.value
@@ -201,27 +202,37 @@ const visibleCatalogs = computed(() => {
   return catalogs.value.filter(c => !c.devOnly)
 })
 
-// Switch away from Testnet catalog if developer mode is disabled
-watch(developerMode, (newVal) => {
-  if (!newVal && selectedCatalogName.value === 'Testnet') {
-    selectedCatalogName.value = 'Devnet'
-    console.log('Switched from Testnet to Devnet (developer mode disabled)')
-  }
-})
-
 // Catalog address is actually the RPC URL for Solana
+// Priority: Custom RPC endpoint > Custom Network address > Network preset
 const catalogAddress = computed(() => {
+  // If RPC dropdown is set to "custom" and a custom URL is provided, use it
+  if (selectedRpcEndpoint.value === 'custom' && customRpcEndpoint.value) {
+    return customRpcEndpoint.value
+  }
+  
+  // If RPC dropdown has a direct URL (not a preset name), use it
+  if (selectedRpcEndpoint.value && 
+      selectedRpcEndpoint.value !== 'custom' && 
+      selectedRpcEndpoint.value.startsWith('http')) {
+    // Check if it's one of the preset URLs - if so, use the network dropdown
+    const isPreset = rpcEndpoints.value.some(e => e.url === selectedRpcEndpoint.value && e.url !== 'custom')
+    if (!isPreset) {
+      return selectedRpcEndpoint.value
+    }
+  }
+  
+  // Network dropdown custom
   if (selectedCatalogName.value === 'Custom...') {
     return customCatalogAddress.value || null
   }
+  
+  // Network preset
   const catalog = catalogs.value.find(c => c.name === selectedCatalogName.value)
-  if (!catalog) return 'https://api.devnet.solana.com'
+  if (!catalog) return 'https://api.testnet.solana.com'
   
   switch (catalog.address) {
-    case 'devnet': return 'https://api.devnet.solana.com'
     case 'testnet': return 'https://api.testnet.solana.com'
-    case 'mainnet': return 'https://api.mainnet-beta.solana.com'
-    default: return 'https://api.devnet.solana.com'
+    default: return 'https://api.testnet.solana.com'
   }
 })
 
@@ -322,14 +333,8 @@ function onCatalogChange(catalogName) {
   const catalog = catalogs.value.find(c => c.name === catalogName)
   if (catalog && catalog.address !== 'custom') {
     switch (catalog.address) {
-      case 'devnet':
-        selectedRpcEndpoint.value = 'https://api.devnet.solana.com'
-        break
       case 'testnet':
         selectedRpcEndpoint.value = 'https://api.testnet.solana.com'
-        break
-      case 'mainnet':
-        selectedRpcEndpoint.value = 'https://api.mainnet-beta.solana.com'
         break
     }
     rpcClient.value = new SolanaRPC(selectedRpcEndpoint.value)
@@ -520,17 +525,54 @@ const localFileName = ref(null)
 function onRpcEndpointChange(newEndpoint) {
   selectedRpcEndpoint.value = newEndpoint
   if (newEndpoint !== 'custom') {
+    // Clear custom endpoint when switching to preset
+    customRpcEndpoint.value = ''
     rpcClient.value = new SolanaRPC(newEndpoint)
-    // Reload catalog with new endpoint
+    // Reset game state and reload catalog with new endpoint
+    selectedPlatform.value = null
+    selectedGame.value = null
+    selectedVersion.value = null
+    fileData.value = null
+    verified.value = false
+    runJson.value = null
     loadCatalog()
   }
 }
 
+// Normalize RPC URL - strip /websocket suffix if user accidentally included it
+function normalizeRpcUrl(url) {
+  if (!url) return url
+  // Remove /websocket or /websocket/ from the path (before query string)
+  try {
+    const parsed = new URL(url)
+    if (parsed.pathname.endsWith('/websocket')) {
+      parsed.pathname = parsed.pathname.replace(/\/websocket$/, '')
+    } else if (parsed.pathname.endsWith('/websocket/')) {
+      parsed.pathname = parsed.pathname.replace(/\/websocket\/$/, '/')
+    }
+    return parsed.toString()
+  } catch {
+    // If URL parsing fails, try simple string replacement
+    return url.replace(/\/websocket(\?|$)/, '$1')
+  }
+}
+
 function onCustomRpcEndpointChange(newUrl) {
-  customRpcEndpoint.value = newUrl
-  if (newUrl) {
-    selectedRpcEndpoint.value = newUrl
-    rpcClient.value = new SolanaRPC(newUrl)
+  // Normalize the URL (strip /websocket if present)
+  const normalizedUrl = normalizeRpcUrl(newUrl)
+  customRpcEndpoint.value = normalizedUrl
+  
+  if (normalizedUrl) {
+    // Keep selectedRpcEndpoint as 'custom' so the input stays visible
+    // The catalogAddress computed will use customRpcEndpoint
+    rpcClient.value = new SolanaRPC(normalizedUrl)
+    // Reset game state and reload catalog with new endpoint
+    selectedPlatform.value = null
+    selectedGame.value = null
+    selectedVersion.value = null
+    fileData.value = null
+    verified.value = false
+    runJson.value = null
     loadCatalog()
   }
 }
