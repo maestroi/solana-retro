@@ -1,5 +1,8 @@
 <template>
   <div class="min-h-screen bg-gray-900 text-gray-100">
+    <!-- Welcome Modal -->
+    <WelcomeModal ref="welcomeModalRef" />
+    
     <!-- Header -->
     <Header
       :selected-rpc-endpoint="selectedRpcEndpoint"
@@ -21,6 +24,7 @@
       @update:game="onGameChange"
       @update:version="onVersionChange"
       @refresh-catalog="loadCatalog"
+      @show-info="showWelcomeModal"
     />
 
     <!-- Main Content -->
@@ -128,6 +132,7 @@
             :verified="verified"
             :file-data="fileData"
             :loading="loading"
+            :catalog-loading="catalogLoading"
             :error="error"
             :progress-percent="cartridgeProgressPercent"
             @update:platform="onPlatformChange"
@@ -161,6 +166,7 @@ import { SolanaRPC } from './solana-rpc.js'
 import Header from './components/Header.vue'
 import EmulatorContainer from './components/EmulatorContainer.vue'
 import GameSelector from './components/GameSelector.vue'
+import WelcomeModal from './components/WelcomeModal.vue'
 import { useSolanaCatalog } from './composables/useSolanaCatalog.js'
 import { useSolanaCartridge } from './composables/useSolanaCartridge.js'
 import { useDosEmulator } from './composables/useDosEmulator.js'
@@ -169,16 +175,30 @@ import { useNesEmulator } from './composables/useNesEmulator.js'
 
 // Solana RPC Configuration
 // Support multiple RPC endpoints - primary for catalog, fallback for larger game downloads
+
+// Detect dev mode (localhost or dev server)
+const isDevMode = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+
+// RPC Proxy endpoints
+const RPC_PROXY_PROD = 'https://rpc-solana-retro.maestroi.cc'
+const RPC_PROXY_DEV = 'http://localhost:8899'
+
+// Select proxy based on environment
+const proxyEndpoint = isDevMode ? RPC_PROXY_DEV : RPC_PROXY_PROD
+
 const defaultRpcEndpoints = [
+  proxyEndpoint,
   'https://api.testnet.solana.com'
 ]
 
 const rpcEndpoints = ref([
-  { name: 'Solana Testnet', url: 'https://api.testnet.solana.com' },
+  { name: 'Solana Retro Proxy (Recommended)', url: proxyEndpoint },
+  { name: 'Solana Testnet (Rate Limited)', url: 'https://api.testnet.solana.com' },
   { name: 'Custom...', url: 'custom' }
 ])
 
-const selectedRpcEndpoint = ref('https://api.testnet.solana.com')
+// Default to proxy endpoint for better download performance
+const selectedRpcEndpoint = ref(proxyEndpoint)
 const customRpcEndpoint = ref('')
 const rpcClient = ref(new SolanaRPC(selectedRpcEndpoint.value))
 
@@ -428,6 +448,12 @@ watch(selectedVersion, async (newVersion) => {
 // Emulator
 const gameReady = ref(false)
 const emulatorContainerRef = ref(null)
+const welcomeModalRef = ref(null)
+
+// Show the welcome modal (called from help button)
+function showWelcomeModal() {
+  welcomeModalRef.value?.show()
+}
 
 // Helper to convert platform code to string
 function getPlatformName(platformCode) {

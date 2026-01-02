@@ -92,3 +92,13 @@ export {
   batch,
 } from './utils.js';
 
+// Errors
+export {
+  CartridgeError,
+  CartridgeErrorCode,
+  validateCartridgeId,
+  wrapError,
+} from './errors.js';
+
+export type { CartridgeErrorDetails } from './errors.js';
+

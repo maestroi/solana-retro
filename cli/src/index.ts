@@ -27,6 +27,7 @@ import {
   formatBytes,
   CartridgeClient,
 } from '@solana-retro/sdk';
+import type { FetchProgress, PublishProgress } from '@solana-retro/sdk';
 
 const ENDPOINTS = {
   mainnet: 'https://api.mainnet-beta.solana.com',
@@ -351,7 +352,7 @@ program
       const result = await client.publishCartridge(keypair, zipBytes, {
         chunkSize,
         metadata: cmdOptions.metadata ? JSON.parse(cmdOptions.metadata) : {},
-        onProgress: (progress) => {
+        onProgress: (progress: PublishProgress) => {
           switch (progress.phase) {
             case 'preparing':
               spinner.text = 'Preparing cartridge...';
@@ -626,6 +627,284 @@ program
       console.log(`  Address: ${pda.toBase58()}`);
       console.log(`  Bump: ${bump}`);
       console.log(`  Seeds: ["chunk", <cartridge_id>, ${chunkIndex}]\n`);
+    }
+  });
+
+// =============================================================================
+// DOWNLOAD command
+// =============================================================================
+program
+  .command('download <cartridgeId>')
+  .description('Download a cartridge from the blockchain')
+  .option('-o, --output <path>', 'Output file path (defaults to <cartridgeId>.zip)')
+  .option('--no-verify', 'Skip SHA256 verification')
+  .action(async (cartridgeId: string, cmdOptions) => {
+    const globalOptions = program.opts();
+    
+    // Validate cartridge ID format
+    if (!/^[0-9a-fA-F]{64}$/.test(cartridgeId)) {
+      console.error(chalk.red('Invalid cartridge ID. Must be a 64-character hex string.'));
+      return;
+    }
+    
+    const client = new CartridgeClient(
+      globalOptions.url || globalOptions.network,
+      undefined,
+      globalOptions.wsUrl
+    );
+    
+    const spinner = ora('Fetching cartridge manifest...').start();
+    const startTime = Date.now();
+    
+    try {
+      let lastProgressLine = '';
+      
+      const result = await client.fetchCartridgeBytes(cartridgeId, {
+        verifyHash: cmdOptions.verify !== false,
+        onProgress: (progress: FetchProgress) => {
+          switch (progress.phase) {
+            case 'manifest':
+              spinner.text = 'Fetching manifest...';
+              break;
+            case 'chunks':
+              if (spinner.isSpinning) {
+                spinner.stop();
+              }
+              const percent = ((progress.chunksLoaded / progress.totalChunks) * 100).toFixed(1);
+              const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
+              const rate = progress.chunksLoaded > 0 
+                ? (progress.chunksLoaded / ((Date.now() - startTime) / 1000)).toFixed(1) 
+                : '0';
+              
+              const progressBar = createProgressBar(progress.chunksLoaded, progress.totalChunks, 30);
+              const line = `\r${chalk.cyan('  ⬇')} ${progressBar} ${chalk.yellow(percent + '%')} ${chalk.gray(`[${progress.chunksLoaded}/${progress.totalChunks}]`)} ${chalk.gray(`${elapsed}s, ${rate} chunks/s`)}`;
+              
+              process.stdout.write(line);
+              lastProgressLine = line;
+              break;
+            case 'verifying':
+              if (lastProgressLine) {
+                process.stdout.write('\n');
+              }
+              spinner.start();
+              spinner.text = 'Verifying SHA256...';
+              break;
+            case 'complete':
+              spinner.succeed('Download complete!');
+              break;
+          }
+        },
+      });
+      
+      if (!result) {
+        spinner.fail('Cartridge not found');
+        return;
+      }
+      
+      // Write to file
+      const outputPath = cmdOptions.output || `${cartridgeId.substring(0, 16)}.zip`;
+      fs.writeFileSync(outputPath, result.zipBytes);
+      
+      const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+      
+      console.log(chalk.cyan('\n═══════════════════════════════════════════════════════════════'));
+      console.log(chalk.cyan('                    DOWNLOAD COMPLETE'));
+      console.log(chalk.cyan('═══════════════════════════════════════════════════════════════\n'));
+      
+      console.log(`${chalk.gray('Cartridge ID:')} ${cartridgeId}`);
+      console.log(`${chalk.gray('Output file:')}  ${outputPath}`);
+      console.log(`${chalk.gray('Size:')}         ${formatBytes(result.zipBytes.length)}`);
+      console.log(`${chalk.gray('Chunks:')}       ${result.manifest.numChunks}`);
+      console.log(`${chalk.gray('Duration:')}     ${duration}s`);
+      console.log(`${chalk.gray('Verified:')}     ${result.verified ? chalk.green('Yes') : chalk.yellow('No')}`);
+      
+    } catch (error: any) {
+      spinner.fail('Download failed');
+      console.error(chalk.red(error.message));
+    }
+  });
+
+// =============================================================================
+// VERIFY command
+// =============================================================================
+program
+  .command('verify <cartridgeId>')
+  .description('Verify a cartridge\'s integrity without downloading')
+  .option('--check-chunks', 'Verify all chunks exist (slower)')
+  .action(async (cartridgeId: string, cmdOptions) => {
+    const globalOptions = program.opts();
+    
+    // Validate cartridge ID format
+    if (!/^[0-9a-fA-F]{64}$/.test(cartridgeId)) {
+      console.error(chalk.red('Invalid cartridge ID. Must be a 64-character hex string.'));
+      return;
+    }
+    
+    const client = new CartridgeClient(
+      globalOptions.url || globalOptions.network,
+      undefined,
+      globalOptions.wsUrl
+    );
+    
+    const spinner = ora('Verifying cartridge...').start();
+    
+    try {
+      const cartridge = await client.getCartridge(cartridgeId);
+      
+      if (!cartridge) {
+        spinner.fail('Cartridge not found');
+        return;
+      }
+      
+      const manifest = cartridge.manifest;
+      const checks: { name: string; passed: boolean; message: string }[] = [];
+      
+      // Check 1: Manifest exists
+      checks.push({
+        name: 'Manifest exists',
+        passed: true,
+        message: 'Manifest account found'
+      });
+      
+      // Check 2: Finalized
+      checks.push({
+        name: 'Finalized',
+        passed: manifest.finalized,
+        message: manifest.finalized ? 'Cartridge is finalized' : 'Cartridge is NOT finalized'
+      });
+      
+      // Check 3: Valid size
+      const validSize = Number(manifest.zipSize) > 0 && Number(manifest.zipSize) <= 6 * 1024 * 1024;
+      checks.push({
+        name: 'Valid size',
+        passed: validSize,
+        message: `Size: ${formatBytes(Number(manifest.zipSize))}`
+      });
+      
+      // Check 4: Chunk count matches
+      const expectedChunks = Math.ceil(Number(manifest.zipSize) / manifest.chunkSize);
+      const chunksMatch = manifest.numChunks === expectedChunks;
+      checks.push({
+        name: 'Chunk count',
+        passed: chunksMatch,
+        message: `${manifest.numChunks} chunks (expected: ${expectedChunks})`
+      });
+      
+      // Check 5: Optional - verify all chunks exist
+      if (cmdOptions.checkChunks) {
+        spinner.text = 'Checking chunk accounts...';
+        
+        const idBytes = hexToBytes(cartridgeId);
+        let missingChunks: number[] = [];
+        
+        for (let i = 0; i < manifest.numChunks; i++) {
+          const [chunkPDA] = deriveChunkPDA(idBytes, i, PROGRAM_ID);
+          const chunkInfo = await client.connection.getAccountInfo(chunkPDA);
+          if (!chunkInfo) {
+            missingChunks.push(i);
+          }
+        }
+        
+        checks.push({
+          name: 'All chunks exist',
+          passed: missingChunks.length === 0,
+          message: missingChunks.length === 0 
+            ? `All ${manifest.numChunks} chunks present`
+            : `Missing ${missingChunks.length} chunks: ${missingChunks.slice(0, 5).join(', ')}${missingChunks.length > 5 ? '...' : ''}`
+        });
+      }
+      
+      spinner.succeed('Verification complete');
+      
+      console.log(chalk.cyan('\n═══════════════════════════════════════════════════════════════'));
+      console.log(chalk.cyan('                    VERIFICATION RESULTS'));
+      console.log(chalk.cyan('═══════════════════════════════════════════════════════════════\n'));
+      
+      console.log(`${chalk.gray('Cartridge ID:')} ${cartridgeId}\n`);
+      
+      for (const check of checks) {
+        const icon = check.passed ? chalk.green('✓') : chalk.red('✗');
+        const color = check.passed ? chalk.green : chalk.red;
+        console.log(`  ${icon} ${color(check.name)}: ${chalk.gray(check.message)}`);
+      }
+      
+      const allPassed = checks.every(c => c.passed);
+      console.log();
+      
+      if (allPassed) {
+        console.log(chalk.green('✓ All checks passed!'));
+      } else {
+        console.log(chalk.red('✗ Some checks failed'));
+        process.exitCode = 1;
+      }
+      
+    } catch (error: any) {
+      spinner.fail('Verification failed');
+      console.error(chalk.red(error.message));
+    }
+  });
+
+// =============================================================================
+// STATS command
+// =============================================================================
+program
+  .command('stats')
+  .description('Show catalog statistics')
+  .action(async () => {
+    const globalOptions = program.opts();
+    const client = new CartridgeClient(
+      globalOptions.url || globalOptions.network,
+      undefined,
+      globalOptions.wsUrl
+    );
+    
+    const spinner = ora('Fetching statistics...').start();
+    
+    try {
+      const catalogRoot = await client.getCatalogRoot();
+      
+      if (!catalogRoot) {
+        spinner.fail('Catalog not initialized');
+        return;
+      }
+      
+      // Fetch all entries to compute stats
+      const allEntries = await client.listAllCartridges({ includeRetired: true });
+      
+      spinner.succeed('Statistics loaded');
+      
+      // Compute stats
+      let totalSize = 0n;
+      let activeCount = 0;
+      let retiredCount = 0;
+      
+      for (const entry of allEntries) {
+        totalSize += entry.zipSize;
+        if ((entry.flags & 0x01) !== 0) {
+          retiredCount++;
+        } else {
+          activeCount++;
+        }
+      }
+      
+      console.log(chalk.cyan('\n═══════════════════════════════════════════════════════════════'));
+      console.log(chalk.cyan('                    CATALOG STATISTICS'));
+      console.log(chalk.cyan('═══════════════════════════════════════════════════════════════\n'));
+      
+      console.log(`${chalk.gray('Network:')}            ${globalOptions.network || 'custom'}`);
+      console.log(`${chalk.gray('Admin:')}              ${catalogRoot.admin.toBase58()}`);
+      console.log();
+      console.log(`${chalk.gray('Total Cartridges:')}   ${catalogRoot.totalCartridges}`);
+      console.log(`${chalk.gray('  Active:')}           ${chalk.green(activeCount)}`);
+      console.log(`${chalk.gray('  Retired:')}          ${chalk.red(retiredCount)}`);
+      console.log();
+      console.log(`${chalk.gray('Pages:')}              ${catalogRoot.pageCount}`);
+      console.log(`${chalk.gray('Latest Page:')}        ${catalogRoot.latestPageIndex}`);
+      console.log(`${chalk.gray('Total Size:')}         ${formatBytes(Number(totalSize))}`);
+      
+    } catch (error: any) {
+      spinner.fail('Failed to fetch statistics');
+      console.error(chalk.red(error.message));
     }
   });
 

@@ -132,14 +132,19 @@ async function verifySHA256(data, expectedHash) {
   return hashHex.toLowerCase() === expectedHex.toLowerCase()
 }
 
+// Detect dev mode
+const isDevMode = typeof window !== 'undefined' && 
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+
+// RPC Proxy endpoints (rate-limited, recommended for downloads)
+const RPC_PROXY_PROD = 'https://rpc-solana-retro.maestroi.cc'
+const RPC_PROXY_DEV = 'http://localhost:8899'
+
 // Default RPC endpoints for fallback (useful for larger games)
-// Multiple endpoints help distribute load and avoid rate limits
-// Testnet limits: 100 req/10s per IP (total), 40 req/10s per RPC
+// Proxy endpoints are preferred as they handle rate limiting gracefully
 const DEFAULT_RPC_ENDPOINTS = [
-  'https://api.testnet.solana.com',
-  'https://rpc.testnet.soo.network/rpc',
-  // Note: Additional public endpoints can be added here
-  // Some may require API keys or have different rate limits
+  isDevMode ? RPC_PROXY_DEV : RPC_PROXY_PROD,  // Proxy first (handles rate limits)
+  'https://api.testnet.solana.com',            // Fallback to public testnet
 ]
 
 export function useSolanaCartridge(rpcEndpoint, cartridgeId) {

@@ -5,38 +5,101 @@
     </div>
     <div class="px-4 py-3 sm:p-4">
       <div class="space-y-2">
-        <!-- Platform Selection -->
-        <div v-if="availablePlatforms.length > 0">
-          <label class="block text-xs font-medium text-gray-400 mb-1">Platform</label>
-          <select
-            :value="selectedPlatform || ''"
-            @change="onPlatformSelect($event.target.value)"
-            class="w-full text-xs rounded-md border-gray-600 bg-gray-700 text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500 px-2 py-1.5"
-          >
-            <option value="">-- Select Platform --</option>
-            <option v-for="platform in availablePlatforms" :key="platform" :value="platform">
-              {{ platform }}
-            </option>
-          </select>
+        <!-- Loading Skeleton -->
+        <div v-if="catalogLoading" class="space-y-3 animate-pulse">
+          <div>
+            <div class="h-3 w-16 bg-gray-700 rounded mb-2"></div>
+            <div class="h-8 w-full bg-gray-700 rounded"></div>
+          </div>
+          <div>
+            <div class="h-3 w-20 bg-gray-700 rounded mb-2"></div>
+            <div class="h-8 w-full bg-gray-700 rounded"></div>
+          </div>
+          <div class="pt-3">
+            <div class="h-4 w-24 bg-gray-700 rounded mb-2"></div>
+            <div class="h-3 w-full bg-gray-700 rounded mb-1"></div>
+            <div class="h-3 w-3/4 bg-gray-700 rounded"></div>
+          </div>
         </div>
-        
-        <!-- Game Selection -->
-        <div v-if="selectedPlatform || availablePlatforms.length === 0">
-          <label class="block text-xs font-medium text-gray-400 mb-1">
-            Game
-            <span v-if="selectedGame" class="ml-2 text-xs text-gray-500 font-normal">(ID: {{ selectedGame.appId }})</span>
-          </label>
-          <select
-            :value="selectedGame ? selectedGame.appId : ''"
-            @change="onGameSelect($event.target.value)"
-            class="w-full text-xs rounded-md border-gray-600 bg-gray-700 text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500 px-2 py-1.5"
-          >
-            <option value="">-- Select Game --</option>
-            <option v-for="game in filteredGames" :key="game.appId" :value="game.appId">
-              {{ game.title }}{{ game.retired ? ' (Retired)' : '' }}
-            </option>
-          </select>
-        </div>
+
+        <template v-else>
+          <!-- Search Input -->
+          <div v-if="games && games.length > 3">
+            <label class="block text-xs font-medium text-gray-400 mb-1">Search</label>
+            <div class="relative">
+              <input
+                type="text"
+                v-model="searchQuery"
+                placeholder="Search games..."
+                class="w-full text-xs rounded-md border-gray-600 bg-gray-700 text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500 px-2 py-1.5 pr-8"
+              />
+              <button
+                v-if="searchQuery"
+                @click="searchQuery = ''"
+                class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white"
+              >
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          
+          <!-- Platform Selection -->
+          <div v-if="availablePlatforms.length > 0">
+            <label class="block text-xs font-medium text-gray-400 mb-1">Platform</label>
+            <div class="flex flex-wrap gap-1.5 mb-1">
+              <button
+                @click="onPlatformSelect('')"
+                :class="[
+                  'px-2 py-1 text-xs rounded-md transition-colors',
+                  !selectedPlatform 
+                    ? 'bg-indigo-600 text-white' 
+                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                ]"
+              >
+                All ({{ games?.length || 0 }})
+              </button>
+              <button
+                v-for="platform in availablePlatforms"
+                :key="platform"
+                @click="onPlatformSelect(platform)"
+                :class="[
+                  'px-2 py-1 text-xs rounded-md transition-colors',
+                  selectedPlatform === platform 
+                    ? 'bg-indigo-600 text-white' 
+                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                ]"
+              >
+                {{ platform }} ({{ platformCounts[platform] || 0 }})
+              </button>
+            </div>
+          </div>
+          
+          <!-- Game Selection -->
+          <div v-if="selectedPlatform || availablePlatforms.length === 0 || searchQuery">
+            <label class="block text-xs font-medium text-gray-400 mb-1">
+              Game
+              <span v-if="searchedGames.length > 0" class="text-gray-500 font-normal">({{ searchedGames.length }} {{ searchedGames.length === 1 ? 'result' : 'results' }})</span>
+              <span v-if="selectedGame" class="ml-2 text-xs text-gray-500 font-normal">(ID: {{ selectedGame.appId }})</span>
+            </label>
+            <!-- No results message -->
+            <div v-if="searchQuery && searchedGames.length === 0" class="text-xs text-gray-400 py-2">
+              No games found matching "{{ searchQuery }}"
+            </div>
+            <select
+              v-else
+              :value="selectedGame ? selectedGame.appId : ''"
+              @change="onGameSelect($event.target.value)"
+              class="w-full text-xs rounded-md border-gray-600 bg-gray-700 text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500 px-2 py-1.5"
+            >
+              <option value="">-- Select Game --</option>
+              <option v-for="game in searchedGames" :key="game.appId" :value="game.appId">
+                {{ game.title }}{{ game.retired ? ' (Retired)' : '' }}
+              </option>
+            </select>
+          </div>
+        </template>
         
         <!-- Version Selection -->
         <div v-if="selectedGame && selectedGame.versions.length > 0">
@@ -222,7 +285,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { formatBytes, formatHash } from '../utils.js'
 
 const props = defineProps({
@@ -236,11 +299,15 @@ const props = defineProps({
   verified: Boolean,
   fileData: Object,
   loading: Boolean,
+  catalogLoading: Boolean,
   error: String,
   progressPercent: Number
 })
 
 const emit = defineEmits(['update:platform', 'update:game', 'update:version', 'load-cartridge', 'clear-cache'])
+
+// Search query state
+const searchQuery = ref('')
 
 // Compute available platforms (only platforms that have games)
 const availablePlatforms = computed(() => {
@@ -254,11 +321,34 @@ const availablePlatforms = computed(() => {
   return Array.from(platforms).sort()
 })
 
+// Count games per platform for the filter buttons
+const platformCounts = computed(() => {
+  if (!props.games || props.games.length === 0) return {}
+  const counts = {}
+  props.games.forEach(game => {
+    if (game.platform) {
+      counts[game.platform] = (counts[game.platform] || 0) + 1
+    }
+  })
+  return counts
+})
+
 // Filter games by selected platform
 const filteredGames = computed(() => {
   if (!props.games || props.games.length === 0) return []
   if (!props.selectedPlatform) return props.games
   return props.games.filter(game => game.platform === props.selectedPlatform)
+})
+
+// Filter games by search query (searches title and platform)
+const searchedGames = computed(() => {
+  if (!searchQuery.value) return filteredGames.value
+  const query = searchQuery.value.toLowerCase().trim()
+  return filteredGames.value.filter(game => {
+    const title = (game.title || '').toLowerCase()
+    const platform = (game.platform || '').toLowerCase()
+    return title.includes(query) || platform.includes(query)
+  })
 })
 
 function onPlatformSelect(platform) {

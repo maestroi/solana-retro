@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
+    "@solana-retro/sdk": "file:../sdk",
     "@solana/web3.js": "^1.87.6",
     "bs58": "^5.0.0",
     "commander": "^11.1.0",
