@@ -16,6 +16,7 @@ import {
   ENTRIES_PER_PAGE,
   ENDPOINTS,
   NetworkName,
+  IGNORED_CARTRIDGE_HASHES,
 } from './constants.js';
 import {
   deriveCatalogRootPDA,
@@ -233,6 +234,9 @@ export class CartridgeClient {
 
   /**
    * Fetch cartridge with full ZIP data reconstructed
+   * 
+   * Performance optimization: Fetches chunk batches with controlled concurrency
+   * to maximize speed while avoiding rate limits (429 errors).
    */
   async fetchCartridgeBytes(
     cartridgeId: Uint8Array | string,
@@ -262,8 +266,10 @@ export class CartridgeClient {
     // Derive all chunk PDAs
     const chunkPDAs = deriveAllChunkPDAs(idBytes, totalChunks, this.programId);
     
-    // Fetch chunks in batches (getMultipleAccountsInfo has a limit of 100)
+    // Fetch chunks in batches with CONTROLLED CONCURRENCY
+    // to avoid 429 rate limit errors
     const BATCH_SIZE = 100;
+    const CONCURRENT_BATCHES = 3; // Fetch 3 batches (300 chunks) at a time
     const chunkBatches = batch(chunkPDAs, BATCH_SIZE);
     const chunks: (Uint8Array | null)[] = new Array(totalChunks).fill(null);
     let chunksLoaded = 0;
@@ -277,23 +283,34 @@ export class CartridgeClient {
       totalBytes,
     });
     
-    for (const batchPDAs of chunkBatches) {
-      const pubkeys = batchPDAs.map(([pk]) => pk);
-      const accountInfos = await retry(() => 
-        this.connection.getMultipleAccountsInfo(pubkeys)
-      );
+    // Process batches in waves with controlled concurrency
+    for (let i = 0; i < chunkBatches.length; i += CONCURRENT_BATCHES) {
+      const concurrentBatches = chunkBatches.slice(i, i + CONCURRENT_BATCHES);
       
-      for (let i = 0; i < accountInfos.length; i++) {
-        const info = accountInfos[i];
-        if (info && accountExists(info.data)) {
-          const chunkData = decodeCartridgeChunk(info.data);
-          const globalIndex = chunkBatches.indexOf(batchPDAs) * BATCH_SIZE + i;
-          chunks[globalIndex] = chunkData.data;
-          chunksLoaded++;
-          bytesLoaded += chunkData.data.length;
+      const batchPromises = concurrentBatches.map((batchPDAs, idx) => {
+        const batchIndex = i + idx;
+        const pubkeys = batchPDAs.map(([pk]) => pk);
+        return retry(() => this.connection.getMultipleAccountsInfo(pubkeys))
+          .then(accountInfos => ({ batchIndex, accountInfos }));
+      });
+      
+      const batchResults = await Promise.all(batchPromises);
+      
+      // Process results from this wave
+      for (const { batchIndex, accountInfos } of batchResults) {
+        for (let j = 0; j < accountInfos.length; j++) {
+          const info = accountInfos[j];
+          if (info && accountExists(info.data)) {
+            const chunkData = decodeCartridgeChunk(info.data);
+            const globalIndex = batchIndex * BATCH_SIZE + j;
+            chunks[globalIndex] = chunkData.data;
+            chunksLoaded++;
+            bytesLoaded += chunkData.data.length;
+          }
         }
       }
       
+      // Update progress after each wave
       onProgress?.({
         phase: 'chunks',
         chunksLoaded,
@@ -301,6 +318,11 @@ export class CartridgeClient {
         bytesLoaded,
         totalBytes,
       });
+      
+      // Small delay between waves to avoid rate limits
+      if (i + CONCURRENT_BATCHES < chunkBatches.length) {
+        await sleep(100);
+      }
     }
     
     // Check if all chunks were loaded
@@ -405,6 +427,9 @@ export class CartridgeClient {
 
   /**
    * Publish a cartridge (ZIP bytes) to the blockchain
+   * 
+   * Performance optimization: Uses parallel chunk uploads with configurable concurrency.
+   * Default concurrency of 3 provides ~3x faster uploads while avoiding rate limits.
    */
   async publishCartridge(
     publisher: Keypair,
@@ -416,6 +441,7 @@ export class CartridgeClient {
       metadata = {},
       onProgress,
       skipExisting = true,
+      concurrentUploads = 3, // Parallel upload concurrency (3-5 recommended)
     } = options;
     
     // Validate size
@@ -432,6 +458,11 @@ export class CartridgeClient {
       chunksWritten: 0,
       totalChunks: 0,
     });
+    
+    // Check if cartridge is in ignore list
+    if (IGNORED_CARTRIDGE_HASHES.has(cartridgeIdHex.toLowerCase())) {
+      throw new Error(`Cartridge ${cartridgeIdHex} is in the ignore list and cannot be uploaded`);
+    }
     
     // Check if already exists
     const existingManifest = await this.getManifest(cartridgeId);
@@ -473,32 +504,53 @@ export class CartridgeClient {
     );
     signatures.push(manifestSig);
     
-    // Write chunks
+    // Write chunks in parallel batches
     onProgress?.({
       phase: 'chunks',
       chunksWritten: 0,
       totalChunks: numChunks,
     });
     
-    for (let i = 0; i < chunks.length; i++) {
-      // Retry chunk write with exponential backoff
-      const chunkSig = await retry(
-        () => this.writeChunk(publisher, cartridgeId, i, chunks[i]),
-        5,  // max retries
-        1000 // base delay 1 second
+    let chunksWritten = 0;
+    const chunkBatches = batch(
+      chunks.map((chunk, index) => ({ chunk, index })),
+      concurrentUploads
+    );
+    
+    for (const chunkBatch of chunkBatches) {
+      // Upload batch in parallel
+      const batchPromises = chunkBatch.map(({ chunk, index }) =>
+        retry(
+          () => this.writeChunk(publisher, cartridgeId, index, chunk),
+          5,  // max retries
+          1000 // base delay 1 second
+        )
       );
-      signatures.push(chunkSig);
+      
+      const batchResults = await Promise.allSettled(batchPromises);
+      
+      // Process results
+      for (let i = 0; i < batchResults.length; i++) {
+        const result = batchResults[i];
+        if (result.status === 'fulfilled') {
+          signatures.push(result.value);
+          chunksWritten++;
+        } else {
+          // Re-throw the first failure
+          throw new Error(`Failed to upload chunk ${chunkBatch[i].index}: ${result.reason}`);
+        }
+      }
       
       onProgress?.({
         phase: 'chunks',
-        chunksWritten: i + 1,
+        chunksWritten,
         totalChunks: numChunks,
-        currentTx: chunkSig,
+        currentTx: signatures[signatures.length - 1],
       });
       
-      // Delay between chunks to avoid rate limiting (400ms for public RPCs)
-      if (i < chunks.length - 1) {
-        await sleep(400);
+      // Small delay between batches to avoid overwhelming RPC (200ms vs 400ms per chunk)
+      if (chunksWritten < numChunks) {
+        await sleep(200);
       }
     }
     

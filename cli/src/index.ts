@@ -13,6 +13,7 @@ import {
   DEFAULT_CHUNK_SIZE,
   MAX_CARTRIDGE_SIZE,
   ENTRIES_PER_PAGE,
+  IGNORED_CARTRIDGE_HASHES,
   deriveCatalogRootPDA,
   deriveCatalogPagePDA,
   deriveManifestPDA,
@@ -250,6 +251,14 @@ program
       // Compute cartridge ID (sha256)
       const cartridgeId = await sha256(zipBytes);
       const cartridgeIdHex = bytesToHex(cartridgeId);
+      
+      // Check if cartridge is in ignore list
+      if (IGNORED_CARTRIDGE_HASHES.has(cartridgeIdHex.toLowerCase())) {
+        spinner.fail('Cartridge is in the ignore list');
+        console.log(chalk.red(`\n⚠ Cartridge ${cartridgeIdHex} is blocked and cannot be uploaded.`));
+        console.log(chalk.yellow('This cartridge hash is in the ignore list to prevent duplicate uploads.'));
+        return;
+      }
       
       const numChunks = Math.ceil(zipBytes.length / chunkSize);
       

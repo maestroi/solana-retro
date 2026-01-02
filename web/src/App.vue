@@ -444,16 +444,18 @@ function getPlatformName(platformCode) {
 // Computed platform name for EmulatorContainer
 const currentPlatform = computed(() => {
   // Priority: run.json platform > cart header platform > metadata platform > default
+  let platform = 'DOS'
+  
   if (runJson.value?.platform) {
-    return runJson.value.platform
+    platform = runJson.value.platform
+  } else if (cartHeader.value?.metadata?.platform) {
+    platform = cartHeader.value.metadata.platform
+  } else if (cartHeader.value?.platform !== undefined) {
+    platform = getPlatformName(cartHeader.value.platform)
   }
-  if (cartHeader.value?.metadata?.platform) {
-    return cartHeader.value.metadata.platform
-  }
-  if (cartHeader.value?.platform !== undefined) {
-    return getPlatformName(cartHeader.value.platform)
-  }
-  return 'DOS'
+  
+  // Normalize platform to uppercase for consistent comparison
+  return typeof platform === 'string' ? platform.toUpperCase() : platform
 })
 
 // Create a manifest-like object for DOS emulator compatibility

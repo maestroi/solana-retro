@@ -1,6 +1,7 @@
 import { ref, computed } from 'vue'
 import { Connection, PublicKey } from '@solana/web3.js'
 import { createRateLimiter, isCustomRpcEndpoint } from '../utils.js'
+import { IGNORED_CARTRIDGE_HASHES } from '../constants.js'
 
 /**
  * Solana Catalog loader composable
@@ -278,6 +279,12 @@ export function useSolanaCatalog(rpcEndpoint, showRetiredGames = null) {
         if (isRetired && !shouldShowRetired) continue
 
         const cartridgeIdHex = bytesToHex(entry.cartridgeId)
+        
+        // Skip ignored cartridges
+        if (IGNORED_CARTRIDGE_HASHES.has(cartridgeIdHex.toLowerCase())) {
+          console.log(`Skipping ignored cartridge: ${cartridgeIdHex}`)
+          continue
+        }
         
         // Try to get metadata from manifest
         let metadata = null

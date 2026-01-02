@@ -2,6 +2,7 @@ import { ref, computed } from 'vue'
 import { Connection, PublicKey } from '@solana/web3.js'
 import { useCache } from './useCache.js'
 import { createRateLimiter, isCustomRpcEndpoint } from '../utils.js'
+import { IGNORED_CARTRIDGE_HASHES } from '../constants.js'
 
 /**
  * Solana Cartridge loader composable
@@ -263,6 +264,17 @@ export function useSolanaCartridge(rpcEndpoint, cartridgeId) {
       return
     }
 
+    // Check if cartridge is in ignore list
+    const cartridgeIdHex = typeof cartridgeId.value === 'string' 
+      ? cartridgeId.value 
+      : bytesToHex(cartridgeId.value)
+    
+    if (IGNORED_CARTRIDGE_HASHES.has(cartridgeIdHex.toLowerCase())) {
+      error.value = 'This cartridge is in the ignore list and cannot be loaded'
+      console.log(`Blocked ignored cartridge: ${cartridgeIdHex}`)
+      return
+    }
+
     console.log('Loading cartridge info for:', cartridgeId.value)
 
     try {
@@ -337,6 +349,11 @@ export function useSolanaCartridge(rpcEndpoint, cartridgeId) {
 
   /**
    * Load full cartridge (download all chunks)
+   * 
+   * OPTIMIZATION: Uses chunk-level caching for:
+   * - Instant loads if all chunks are cached
+   * - Resumable downloads (only fetches missing chunks)
+   * - Parallel batch fetching for uncached chunks
    */
   async function loadCartridge() {
     if (!cartridgeId.value || !rpcEndpoint.value) {
@@ -367,96 +384,161 @@ export function useSolanaCartridge(rpcEndpoint, cartridgeId) {
       const manifest = cartHeader.value
       const numChunks = manifest.numChunks
       const totalBytes = manifest.totalSize
+      const cartridgeIdHex = manifest.cartridgeId
 
       progress.value = {
         chunksFound: 0,
         expectedChunks: numChunks,
         bytes: 0,
         rate: 0,
-        phase: 'fetching-chunks',
-        statusMessage: 'Downloading chunks from Solana...'
+        phase: 'checking-cache',
+        statusMessage: 'Checking cached chunks...'
       }
 
-      // Derive all chunk PDAs
-      const chunkPDAs = []
-      for (let i = 0; i < numChunks; i++) {
-        const [pda] = deriveChunkPDA(cartridgeId.value, i)
-        chunkPDAs.push(pda)
-      }
-
-      // Fetch chunks in batches (getMultipleAccountsInfo has limit of 100)
-      const BATCH_SIZE = 100
+      // OPTIMIZATION: Check for cached chunks first
+      const cachedChunks = await cache.getCachedChunks(cartridgeIdHex, numChunks)
       const chunks = new Array(numChunks).fill(null)
       let chunksLoaded = 0
       let bytesLoaded = 0
-      const endpoints = getRpcEndpoints()
 
-      for (let batchStart = 0; batchStart < chunkPDAs.length; batchStart += BATCH_SIZE) {
-        const batchEnd = Math.min(batchStart + BATCH_SIZE, chunkPDAs.length)
-        const batchPDAs = chunkPDAs.slice(batchStart, batchEnd)
-        
-        // Try fetching batch with fallback RPCs
-        let accountInfos = null
-        let lastError = null
-        
-        for (const endpoint of endpoints) {
-          try {
-            // Only rate limit for non-custom endpoints
-            const isCustom = isCustomRpcEndpoint(endpoint)
-            if (!isCustom && rateLimiter._enabled) {
-              await rateLimiter.rateLimit()
-            }
-            
-            const connection = new Connection(endpoint, 'confirmed')
-            accountInfos = await connection.getMultipleAccountsInfo(batchPDAs)
-            break // Success, exit loop
-          } catch (err) {
-            // Check if it's a 429 error and handle Retry-After
-            if (err.message && (err.message.includes('429') || err.message.includes('Too Many Requests'))) {
-              const isCustom = isCustomRpcEndpoint(endpoint)
-              if (!isCustom) {
-                rateLimiter.handle429Error(err)
-                // Wait before retrying
-                await new Promise(resolve => setTimeout(resolve, 1000))
-              }
-            }
-            
-            console.warn(`Failed to fetch batch ${batchStart}-${batchEnd} using ${endpoint}:`, err.message)
-            lastError = err
-            // Continue to next endpoint
-          }
-        }
-        
-        if (!accountInfos) {
-          throw lastError || new Error(`Failed to fetch batch ${batchStart}-${batchEnd} with all RPC endpoints`)
-        }
-        
-        for (let i = 0; i < accountInfos.length; i++) {
-          const info = accountInfos[i]
-          if (info && info.data) {
-            const chunkData = decodeCartridgeChunk(info.data)
-            const globalIndex = batchStart + i
-            chunks[globalIndex] = chunkData
-            chunksLoaded++
-            bytesLoaded += chunkData.length
-          }
-        }
+      // Load cached chunks into array
+      for (const [index, data] of cachedChunks) {
+        chunks[index] = data
+        chunksLoaded++
+        bytesLoaded += data.length
+      }
 
+      // Determine which chunks need to be fetched
+      const missingIndices = []
+      for (let i = 0; i < numChunks; i++) {
+        if (chunks[i] === null) {
+          missingIndices.push(i)
+        }
+      }
+
+      // If all chunks are cached, skip fetching
+      if (missingIndices.length === 0) {
+        console.log(`All ${numChunks} chunks loaded from cache!`)
         progress.value.chunksFound = chunksLoaded
         progress.value.bytes = bytesLoaded
-        const elapsed = (Date.now() - startTime) / 1000
-        if (elapsed > 0) {
-          progress.value.rate = chunksLoaded / elapsed
+        progress.value.phase = 'reconstructing'
+        progress.value.statusMessage = 'Reconstructing from cache...'
+      } else {
+        console.log(`Fetching ${missingIndices.length}/${numChunks} missing chunks...`)
+        
+        progress.value = {
+          chunksFound: chunksLoaded,
+          expectedChunks: numChunks,
+          bytes: bytesLoaded,
+          rate: 0,
+          phase: 'fetching-chunks',
+          statusMessage: `Downloading ${missingIndices.length} chunks from Solana...`
         }
 
-        // Yield to UI
-        await new Promise(resolve => setTimeout(resolve, 0))
+        // Derive PDAs only for missing chunks
+        const missingChunkPDAs = missingIndices.map(i => {
+          const [pda] = deriveChunkPDA(cartridgeId.value, i)
+          return { index: i, pda }
+        })
+
+        // Fetch missing chunks in parallel batches with CONTROLLED CONCURRENCY
+        // to avoid overwhelming RPC endpoints (429 rate limit errors)
+        const BATCH_SIZE = 100
+        const CONCURRENT_BATCHES = 3 // Fetch 3 batches (300 chunks) at a time
+        const endpoints = getRpcEndpoints()
+
+        // Create batch ranges for missing chunks only
+        const batchRanges = []
+        for (let i = 0; i < missingChunkPDAs.length; i += BATCH_SIZE) {
+          const batch = missingChunkPDAs.slice(i, i + BATCH_SIZE)
+          batchRanges.push(batch)
+        }
+
+        // Fetch batch with retry logic
+        const fetchBatch = async (batch) => {
+          const pdas = batch.map(({ pda }) => pda)
+          let accountInfos = null
+          let lastError = null
+          
+          for (const endpoint of endpoints) {
+            try {
+              const isCustom = isCustomRpcEndpoint(endpoint)
+              if (!isCustom && rateLimiter._enabled) {
+                await rateLimiter.rateLimit()
+              }
+              
+              const connection = new Connection(endpoint, 'confirmed')
+              accountInfos = await connection.getMultipleAccountsInfo(pdas)
+              return { batch, accountInfos }
+            } catch (err) {
+              if (err.message && (err.message.includes('429') || err.message.includes('Too Many Requests'))) {
+                const isCustom = isCustomRpcEndpoint(endpoint)
+                if (!isCustom) {
+                  rateLimiter.handle429Error(err)
+                  await new Promise(resolve => setTimeout(resolve, 1000))
+                }
+              }
+              
+              console.warn(`Failed to fetch batch using ${endpoint}:`, err.message)
+              lastError = err
+            }
+          }
+          
+          throw lastError || new Error(`Failed to fetch batch with all RPC endpoints`)
+        }
+
+        // Execute batch fetches with controlled concurrency (not all at once!)
+        // This prevents 429 rate limit errors from overwhelming the RPC
+        const newChunksToCache = []
+        
+        for (let i = 0; i < batchRanges.length; i += CONCURRENT_BATCHES) {
+          const concurrentBatches = batchRanges.slice(i, i + CONCURRENT_BATCHES)
+          const results = await Promise.all(concurrentBatches.map(fetchBatch))
+          
+          // Process results from this wave
+          for (const { batch, accountInfos } of results) {
+            if (!accountInfos) continue
+            for (let j = 0; j < accountInfos.length; j++) {
+              const info = accountInfos[j]
+              const { index } = batch[j]
+              if (info && info.data) {
+                const chunkData = decodeCartridgeChunk(info.data)
+                chunks[index] = chunkData
+                chunksLoaded++
+                bytesLoaded += chunkData.length
+                
+                // Queue for caching
+                newChunksToCache.push({ index, data: chunkData })
+              }
+            }
+          }
+          
+          // Update progress after each wave
+          progress.value.chunksFound = chunksLoaded
+          progress.value.bytes = bytesLoaded
+          const elapsed = (Date.now() - startTime) / 1000
+          if (elapsed > 0) {
+            progress.value.rate = chunksLoaded / elapsed
+          }
+          
+          // Small delay between waves to avoid rate limits
+          if (i + CONCURRENT_BATCHES < batchRanges.length) {
+            await new Promise(resolve => setTimeout(resolve, 100))
+          }
+        }
+
+        // Save newly fetched chunks to cache (background, don't await)
+        if (newChunksToCache.length > 0) {
+          cache.saveChunks(cartridgeIdHex, newChunksToCache).catch(err => {
+            console.warn('Failed to cache chunks:', err)
+          })
+        }
       }
 
       // Check for missing chunks
-      const missingChunks = chunks.reduce((acc, c, i) => c === null ? [...acc, i] : acc, [])
-      if (missingChunks.length > 0) {
-        error.value = `Missing ${missingChunks.length} chunks: ${missingChunks.slice(0, 10).join(', ')}${missingChunks.length > 10 ? '...' : ''}`
+      const stillMissing = chunks.reduce((acc, c, i) => c === null ? [...acc, i] : acc, [])
+      if (stillMissing.length > 0) {
+        error.value = `Missing ${stillMissing.length} chunks: ${stillMissing.slice(0, 10).join(', ')}${stillMissing.length > 10 ? '...' : ''}`
         loading.value = false
         return
       }
@@ -487,7 +569,7 @@ export function useSolanaCartridge(rpcEndpoint, cartridgeId) {
 
       fileData.value = reconstructed
 
-      // Save to cache
+      // Save full file to cache (for instant load next time)
       const cacheKey = {
         cartridgeId: manifest.cartridgeId,
         sha256: manifest.sha256

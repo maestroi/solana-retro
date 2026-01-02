@@ -64,6 +64,7 @@ export {
   ENTRIES_PER_PAGE,
   MAX_METADATA_LEN,
   ENDPOINTS,
+  IGNORED_CARTRIDGE_HASHES,
 } from './constants.js';
 
 export type { NetworkName } from './constants.js';

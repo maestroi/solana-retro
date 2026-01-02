@@ -134,6 +134,8 @@ export interface PublishOptions {
   metadata?: Record<string, unknown>;
   onProgress?: (progress: PublishProgress) => void;
   skipExisting?: boolean;
+  /** Number of chunks to upload in parallel (default: 3, recommended: 3-5) */
+  concurrentUploads?: number;
 }
 
 /**
