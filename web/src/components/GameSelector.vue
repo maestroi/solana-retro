@@ -180,7 +180,7 @@
                   <span v-if="solPrice" class="text-gray-400">(~${{ rentCost.usd.toFixed(2) }})</span>
                 </div>
                 <div class="text-[10px] text-gray-500 mt-0.5">
-                  {{ cartHeader.chunkCount || Math.ceil(cartHeader.totalSize / 900) }} chunks × ~0.006 SOL each
+                  {{ cartHeader.numChunks || Math.ceil(cartHeader.totalSize / (cartHeader.chunkSize || 800)) }} chunks × ~0.006 SOL each
                 </div>
               </dd>
             </div>
@@ -372,11 +372,13 @@ const MANIFEST_DATA_SIZE = 200 // approximate manifest size
 const rentCost = computed(() => {
   if (!props.cartHeader) return null
   
-  const chunkCount = props.cartHeader.chunkCount || Math.ceil(props.cartHeader.totalSize / CHUNK_DATA_SIZE)
+  // Use actual numChunks from manifest, or calculate from totalSize and chunkSize
+  const chunkSize = props.cartHeader.chunkSize || CHUNK_DATA_SIZE
+  const chunkCount = props.cartHeader.numChunks || Math.ceil(props.cartHeader.totalSize / chunkSize)
   
   // Calculate total bytes stored on-chain
   const manifestBytes = ACCOUNT_OVERHEAD + MANIFEST_DATA_SIZE
-  const chunkBytes = chunkCount * (ACCOUNT_OVERHEAD + CHUNK_DATA_SIZE)
+  const chunkBytes = chunkCount * (ACCOUNT_OVERHEAD + chunkSize)
   const totalBytes = manifestBytes + chunkBytes
   
   const solCost = totalBytes * RENT_PER_BYTE
